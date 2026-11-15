@@ -1,82 +1,89 @@
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
+$AppDir = Join-Path $env:USERPROFILE ".conejo_blanco"
+$VenvDir = Join-Path $AppDir "venv"
+$PythonVenv = Join-Path $VenvDir "Scripts\python.exe"
+$PipVenv = Join-Path $VenvDir "Scripts\pip.exe"
+$CliPyPath = Join-Path $AppDir "cli.py"
+$ConfigFile = Join-Path $AppDir "config.json"
+
 Write-Host ""
 Write-Host "(\_/)" -ForegroundColor Cyan
-Write-Host "(-_-)" -ForegroundColor Cyan
+Write-Host "(^_^)" -ForegroundColor Cyan
 Write-Host "/>Conejo_blanco;" -ForegroundColor Cyan
 Write-Host "by Traker" -ForegroundColor Cyan
 Write-Host ""
 
-Write-Host "=== INICIANDO INSTALACIÓN DE CONEJO BLANCO (WINDOWS 10 / 11) ===" -ForegroundColor Cyan
+Write-Host "=== INSTALADOR / ACTUALIZADOR DE CONEJO BLANCO (WINDOWS 10 / 11) ===" -ForegroundColor Cyan
 Write-Host ""
 
-Write-Host "[Paso 1/7] Verificando instalación de Python 3..." -ForegroundColor Yellow
-if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
-    Write-Host "Python no detectado. Instalando Python 3.12 mediante winget..."
-    winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
-} else {
-    Write-Host "Python ya se encuentra instalado."
+$ModoActualizacion = $false
+if ((Test-Path $CliPyPath) -and (Test-Path $PythonVenv) -and (Get-Command ollama -ErrorAction SilentlyContinue)) {
+    $ModoActualizacion = $true
+    Write-Host "ℹ Instalación previa detectada en $AppDir. Se actualizarán los scripts manteniendo tu entorno." -ForegroundColor Green
+    Write-Host ""
 }
-Write-Host "✔ Python listo." -ForegroundColor Green
+
+Write-Host "Selecciona el modelo de IA local predeterminado para Conejo Blanco:" -ForegroundColor Yellow
+Write-Host "  1) gemma2:2b          (Ultraligero ~1.6 GB, muy rápido)" -ForegroundColor Cyan
+Write-Host "  2) qwen2.5-coder:3b   (Especializado en código y agente terminal ~1.9 GB)" -ForegroundColor Cyan
+$OpcionModelo = Read-Host "Elige una opción [1/2] (por defecto 1)"
+if ($OpcionModelo -eq "2") {
+    $ModeloElegido = "qwen2.5-coder:3b"
+} else {
+    $ModeloElegido = "gemma2:2b"
+}
+Write-Host "✔ Modelo seleccionado: $ModeloElegido" -ForegroundColor Green
 Write-Host ""
 
-Write-Host "[Paso 2/7] Verificando e instalando Ollama..." -ForegroundColor Yellow
-if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
-    Write-Host "Ollama no detectado. Instalando Ollama mediante winget..."
-    winget install -e --id Ollama.Ollama --accept-package-agreements --accept-source-agreements
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+if (-not $ModoActualizacion) {
+    Write-Host "[Paso 1/6] Verificando instalación de Python 3 y Ollama..." -ForegroundColor Yellow
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+        Write-Host "Instalando Python 3.12 mediante winget..."
+        winget install -e --id Python.Python.3.12 --accept-package-agreements --accept-source-agreements
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    }
+    if (-not (Get-Command ollama -ErrorAction SilentlyContinue)) {
+        Write-Host "Instalando Ollama mediante winget..."
+        winget install -e --id Ollama.Ollama --accept-package-agreements --accept-source-agreements
+        $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    }
+    Write-Host "✔ Dependencias base listas." -ForegroundColor Green
+    Write-Host ""
 } else {
-    Write-Host "Ollama ya se encuentra instalado."
+    Write-Host "[Paso 1/6] Omitiendo instalación de paquetes winget (ya instalados)." -ForegroundColor Yellow
+    Write-Host ""
 }
 
+if (-not (Test-Path $AppDir)) { New-Item -ItemType Directory -Path $AppDir | Out-Null }
+
+Write-Host "[Paso 2/6] Verificando servicio activo de Ollama..." -ForegroundColor Yellow
 if (-not (Get-Process -Name "ollama*" -ErrorAction SilentlyContinue)) {
-    Write-Host "Iniciando el servicio de Ollama en segundo plano..."
     Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden
     Start-Sleep -Seconds 4
 }
 Write-Host "✔ Motor Ollama activo." -ForegroundColor Green
 Write-Host ""
 
-$ModeloDefault = "gemma2:2b"
-Write-Host "[Paso 3/7] Descargando el modelo ligero de Google ($ModeloDefault)..." -ForegroundColor Yellow
-ollama pull $ModeloDefault
-Write-Host "✔ Modelo $ModeloDefault descargado y listo." -ForegroundColor Green
+Write-Host "[Paso 3/6] Verificando / descargando el modelo ($ModeloElegido)..." -ForegroundColor Yellow
+ollama pull $ModeloElegido
+Write-Host "✔ Modelo $ModeloElegido listo." -ForegroundColor Green
 Write-Host ""
 
-$AppDir = Join-Path $env:USERPROFILE ".conejo_blanco"
-$VenvDir = Join-Path $AppDir "venv"
-$PythonVenv = Join-Path $VenvDir "Scripts\python.exe"
-$PipVenv = Join-Path $VenvDir "Scripts\pip.exe"
-
-Write-Host "[Paso 4/7] Creando directorio en $AppDir y entorno virtual de Python..." -ForegroundColor Yellow
-if (-not (Test-Path $AppDir)) { New-Item -ItemType Directory -Path $AppDir | Out-Null }
-if (-not (Test-Path $VenvDir)) { python -m venv $VenvDir }
+Write-Host "[Paso 4/6] Verificando entorno virtual de Python y dependencias..." -ForegroundColor Yellow
+if (-not (Test-Path $PythonVenv)) { python -m venv $VenvDir }
 & $PipVenv install --quiet --upgrade pip
 & $PipVenv install --quiet requests rich prompt_toolkit
-Write-Host "✔ Entorno virtual y librerías instaladas." -ForegroundColor Green
+Write-Host "✔ Entorno virtual listo." -ForegroundColor Green
 Write-Host ""
 
-$ConfigFile = Join-Path $AppDir "config.json"
-Write-Host "[Paso 5/7] Verificando archivo de configuración en $ConfigFile..." -ForegroundColor Yellow
-if (-not (Test-Path $ConfigFile)) {
-    $DefaultJson = @'
-{
-  "default_model": "gemma2:2b",
-  "temperature": 0.3,
-  "system_prompt": "Eres un asistente técnico y agente de terminal directo, preciso y útil que responde en español."
-}
-'@
-    Set-Content -Path $ConfigFile -Value $DefaultJson -Encoding UTF8
-    Write-Host "✔ Archivo config.json inicial creado." -ForegroundColor Green
-} else {
-    Write-Host "✔ Se conservó tu archivo config.json existente." -ForegroundColor Green
-}
+Write-Host "[Paso 5/6] Guardando modelo seleccionado en $ConfigFile..." -ForegroundColor Yellow
+& $PythonVenv -c "import json, os, sys; cfg=sys.argv[1]; mod=sys.argv[2]; d={'default_model':mod,'temperature':0.3,'system_prompt':'Eres un asistente técnico y agente de terminal directo, preciso y útil que responde en español.'}; d.update(json.load(open(cfg,'r',encoding='utf-8-sig'))) if os.path.isfile(cfg) else None; d['default_model']=mod; json.dump(d,open(cfg,'w',encoding='utf-8'),indent=2,ensure_ascii=False)" "$ConfigFile" "$ModeloElegido"
+Write-Host "✔ Configuración actualizada con $ModeloElegido." -ForegroundColor Green
 Write-Host ""
 
-$CliPyPath = Join-Path $AppDir "cli.py"
-Write-Host "[Paso 6/7] Escribiendo el código fuente del cliente y agente CLI en Python..." -ForegroundColor Yellow
+Write-Host "[Paso 6/6] Actualizando el código fuente del cliente y agente CLI (cli.py) y lanzador global..." -ForegroundColor Yellow
 $PythonCode = @'
 #!/usr/bin/env python3
 import sys
@@ -85,6 +92,7 @@ import re
 import json
 import time
 import shutil
+import threading
 import argparse
 import subprocess
 from datetime import datetime
@@ -120,23 +128,41 @@ DEFAULT_CONFIG = {
 }
 
 INSTRUCCIONES_AGENTE = """
-MODO AGENTE DE TERMINAL ACTIVADO.
-Sistema operativo actual: {os_name} | Directorio actual: {cwd}
+ERES UN AGENTE EJECUTOR DE TERMINAL CON ACCESO TOTAL AL SISTEMA ({os_name} en {cwd}).
+NUNCA digas "no tengo acceso", "no puedo descargar" ni le des instrucciones al usuario para que las haga él. TÚ TIENES ACCESO DIRECTO A LA TERMINAL MEDIANTE LA ETIQUETA <EJECUTAR>.
 
-Tienes capacidad para ejecutar comandos en la terminal del usuario y leer su salida para diagnosticar, explorar archivos o realizar tareas.
-Cuando necesites ejecutar un comando en el sistema, responde ÚNICAMENTE con el comando envuelto exactamente en estas etiquetas, sin texto adicional antes ni después:
-<EJECUTAR>comando aquí</EJECUTAR>
+Para realizar cualquier acción (instalar paquetes, clonar repositorios, probar scripts, verificar archivos), responde ÚNICAMENTE con:
+<EJECUTAR>comando_exacto</EJECUTAR>
 
-Reglas estrictas:
-1. Ejecuta un solo comando por turno.
-2. Tras emitir <EJECUTAR>...</EJECUTAR>, detente y espera a recibir la salida del sistema.
-3. Una vez que recibas el resultado del comando, analízalo. Si necesitas más información, emite otro <EJECUTAR>...</EJECUTAR>. Cuando tengas la respuesta completa para el usuario, respóndele en español normal sin usar etiquetas.
+EJEMPLOS OBLIGATORIOS DE COMPORTAMIENTO:
+Usuario: instala gTTS desde github y haz una prueba
+Asistente: <EJECUTAR>pip install git+https://github.com/pndurette/gTTS.git</EJECUTAR>
+
+Usuario: revisa si se instaló bien
+Asistente: <EJECUTAR>gtts-cli --version</EJECUTAR>
+
+Usuario: crea un audio de prueba diciendo hola
+Asistente: <EJECUTAR>gtts-cli "Hola Traker, prueba de voz exitosa" --lang es --output prueba.mp3</EJECUTAR>
+
+REGLAS:
+- Emite UN solo comando por turno dentro de <EJECUTAR>...</EJECUTAR>.
+- No saludes ni expliques antes de emitir <EJECUTAR>.
+- Solo responde en texto normal cuando la tarea esté 100% terminada y verificada.
 """
 
 ASCII_ART = r"""(\_/)
-(-_-)
+(^_^)
 />Conejo_blanco;
 by Traker"""
+
+FRAMES_CONEJO = [
+    "(\\_/)\n(^_^)\n/>   ",
+    "(\\_/)\n(^_^)\n/>   ",
+    "(\\_/)\n(^_^)\n/>   ",
+    "(\\_/)\n(-_-)\n/>   ",
+    "(\\_/)\n(^_^)\n/>   ",
+    "(\\_/)\n(o_o)\n/>   "
+]
 
 console = Console()
 
@@ -144,7 +170,7 @@ COMANDOS_INTERNOS = {
     "/agente": "Activa/desactiva el modo agente ejecutor de comandos",
     "/auto": "Activa/desactiva la ejecución automática sin pedir confirmación",
     "/modelos": "Lista los modelos descargados en Ollama",
-    "/modelo": "Cambia el modelo activo (ej. /modelo gemma2:2b)",
+    "/modelo": "Cambia el modelo activo (ej. /modelo qwen2.5-coder:3b)",
     "/temp": "Ajusta la temperatura en caliente (ej. /temp 0.2)",
     "/config": "Muestra la configuración activa y ruta de config.json",
     "/archivo": "Carga un archivo al contexto de la sesión",
@@ -162,8 +188,18 @@ def detectar_so():
         return "Android / Termux (bash)"
     return "Linux / Unix (bash)"
 
+def render_conejo_animado(tick, mensaje_estado):
+    frame = FRAMES_CONEJO[tick % len(FRAMES_CONEJO)]
+    lineas = frame.split("\n")
+    t = Text()
+    t.append(f"{lineas[0]}\n", style="bold bright_white")
+    t.append(f"{lineas[1]}  ", style="bold bright_white")
+    t.append(f"{mensaje_estado}\n", style="bold cyan")
+    t.append(f"{lineas[2]}", style="bold cyan")
+    return t
+
 def asegurar_ollama_activo():
-    """Valida si Ollama responde; si no, lo inicia en segundo plano y espera a que esté listo."""
+    """Valida si Ollama responde; si no, lo inicia en segundo plano y espera con animación."""
     try:
         requests.get(OLLAMA_BASE, timeout=1.5)
         return
@@ -182,7 +218,7 @@ def asegurar_ollama_activo():
         sys.exit(1)
 
     os.makedirs(APP_DIR, exist_ok=True)
-    with console.status("[cyan]🐇 Iniciando motor local de Ollama en segundo plano...[/cyan]", spinner="dots"):
+    with Live(render_conejo_animado(0, "Despertando motor local de Ollama..."), console=console, refresh_per_second=6) as live:
         try:
             with open(OLLAMA_LOG, "a", encoding="utf-8") as log_file:
                 if sys.platform == "win32":
@@ -201,13 +237,16 @@ def asegurar_ollama_activo():
                         start_new_session=True
                     )
         except Exception as e:
+            live.update(Text(""))
             console.print(f"[bold red]Error al intentar arrancar Ollama:[/bold red] {e}")
             sys.exit(1)
 
-        for _ in range(30):
-            time.sleep(0.5)
+        for tick in range(45):
+            time.sleep(0.35)
+            live.update(render_conejo_animado(tick, "Despertando motor local de Ollama..."))
             try:
-                requests.get(OLLAMA_BASE, timeout=1)
+                requests.get(OLLAMA_BASE, timeout=0.8)
+                live.update(Text(""))
                 return
             except requests.exceptions.RequestException:
                 continue
@@ -368,42 +407,65 @@ def exportar_markdown(mensajes, modelo_actual, temperatura, nombre_archivo=None)
 
 def ejecutar_comando_sistema(comando):
     console.print(Panel(f"[bold yellow]$ {comando}[/bold yellow]", title="⚡ Ejecutando en terminal", border_style="yellow", expand=False))
-    try:
-        resultado = subprocess.run(
-            comando,
-            shell=True,
-            capture_output=True,
-            text=True,
-            timeout=60,
-            encoding="utf-8",
-            errors="replace"
-        )
-        salida = ""
-        if resultado.stdout:
-            salida += f"STDOUT:\n{resultado.stdout}\n"
-        if resultado.stderr:
-            salida += f"STDERR:\n{resultado.stderr}\n"
-        if not salida.strip():
-            salida = "(El comando finalizó sin salida en pantalla)"
 
-        if len(salida) > 6000:
-            salida = salida[:6000] + "\n... [SALIDA TRUNCADA POR LONGITUD] ..."
+    resultado_box = {}
+    error_box = {}
+    terminado = threading.Event()
 
-        resumen = f"Código de salida: {resultado.returncode}\n{salida}"
-        console.print(Panel(resumen.strip(), title="📋 Resultado del comando", border_style="dim", expand=False))
-        console.print()
-        return resumen
-    except subprocess.TimeoutExpired:
-        msg = "Error: El comando excedió el tiempo límite de 60 segundos."
+    def _worker():
+        try:
+            resultado_box["res"] = subprocess.run(
+                comando,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                encoding="utf-8",
+                errors="replace"
+            )
+        except Exception as exc:
+            error_box["err"] = exc
+        finally:
+            terminado.set()
+
+    hilo = threading.Thread(target=_worker, daemon=True)
+    hilo.start()
+
+    tick = 0
+    with Live(render_conejo_animado(0, "Ejecutando proceso en terminal..."), console=console, refresh_per_second=6) as live:
+        while not terminado.is_set():
+            live.update(render_conejo_animado(tick, "Ejecutando proceso en terminal..."))
+            tick += 1
+            terminado.wait(0.25)
+        live.update(Text(""))
+
+    if "err" in error_box:
+        err = error_box["err"]
+        if isinstance(err, subprocess.TimeoutExpired):
+            msg = "Error: El comando excedió el tiempo límite de 120 segundos."
+        else:
+            msg = f"Error al ejecutar el comando: {err}"
         console.print(f"[bold red]{msg}[/bold red]\n")
         return msg
-    except Exception as e:
-        msg = f"Error al ejecutar el comando: {e}"
-        console.print(f"[bold red]{msg}[/bold red]\n")
-        return msg
+
+    resultado = resultado_box["res"]
+    salida = ""
+    if resultado.stdout:
+        salida += f"STDOUT:\n{resultado.stdout}\n"
+    if resultado.stderr:
+        salida += f"STDERR:\n{resultado.stderr}\n"
+    if not salida.strip():
+        salida = "(El comando finalizó sin salida en pantalla)"
+
+    if len(salida) > 6000:
+        salida = salida[:6000] + "\n... [SALIDA TRUNCADA POR LONGITUD] ..."
+
+    resumen = f"Código de salida: {resultado.returncode}\n{salida}"
+    console.print(Panel(resumen.strip(), title="📋 Resultado del comando", border_style="dim", expand=False))
+    console.print()
+    return resumen
 
 def consultar_modelo(mensajes, modelo, temperatura):
-    respuesta_completa = ""
     payload = {
         "model": modelo,
         "messages": mensajes,
@@ -411,50 +473,110 @@ def consultar_modelo(mensajes, modelo, temperatura):
         "options": {"temperature": temperatura}
     }
 
-    with Live(Markdown("▌"), console=console, refresh_per_second=12) as live:
-        with requests.post(OLLAMA_CHAT_URL, json=payload, stream=True) as r:
-            if r.status_code == 404:
-                live.update(Text(""))
-                console.print(f"[bold red]Error:[/bold red] El modelo '{modelo}' no está instalado.\n")
-                return None
-            r.raise_for_status()
-            for linea in r.iter_lines():
-                if linea:
-                    datos = json.loads(linea.decode('utf-8'))
-                    fragmento = datos.get("message", {}).get("content", "")
-                    respuesta_completa += fragmento
-                    if "<EJECUTAR>" in respuesta_completa:
-                        live.update(Text("🐇 Analizando acción de terminal...", style="dim cyan"))
-                    else:
-                        live.update(Markdown(respuesta_completa + " ▌"))
-        
-        if "<EJECUTAR>" in respuesta_completa:
+    estado_stream = {
+        "texto": "",
+        "primer_token": False,
+        "finalizado": False,
+        "error": None,
+        "not_found": False
+    }
+
+    def _leer_stream():
+        try:
+            with requests.post(OLLAMA_CHAT_URL, json=payload, stream=True) as r:
+                if r.status_code == 404:
+                    estado_stream["not_found"] = True
+                    return
+                r.raise_for_status()
+                for linea in r.iter_lines():
+                    if linea:
+                        datos = json.loads(linea.decode('utf-8'))
+                        fragmento = datos.get("message", {}).get("content", "")
+                        if fragmento:
+                            estado_stream["texto"] += fragmento
+                            estado_stream["primer_token"] = True
+        except Exception as exc:
+            estado_stream["error"] = exc
+        finally:
+            estado_stream["finalizado"] = True
+
+    hilo = threading.Thread(target=_leer_stream, daemon=True)
+    hilo.start()
+
+    tick = 0
+    with Live(render_conejo_animado(0, f"Pensando con {modelo}..."), console=console, refresh_per_second=10) as live:
+        while not estado_stream["finalizado"]:
+            texto_actual = estado_stream["texto"]
+            if not estado_stream["primer_token"]:
+                live.update(render_conejo_animado(tick, f"Pensando con {modelo}..."))
+            elif "<EJECUTAR>" in texto_actual:
+                live.update(render_conejo_animado(tick, "Preparando comando de terminal..."))
+            else:
+                live.update(Markdown(texto_actual + " ▌"))
+            tick += 1
+            time.sleep(0.15)
+
+        if estado_stream["not_found"]:
+            live.update(Text(""))
+            console.print(f"[bold red]Error:[/bold red] El modelo '[yellow]{modelo}[/yellow]' no está instalado.")
+            console.print(f"Descárgalo ejecutando: [cyan]ollama pull {modelo}[/cyan]\n")
+            return None
+
+        if estado_stream["error"] is not None:
+            live.update(Text(""))
+            raise estado_stream["error"]
+
+        respuesta_final = estado_stream["texto"]
+        if "<EJECUTAR>" in respuesta_final:
             live.update(Text(""))
         else:
-            live.update(Markdown(respuesta_completa))
-    
-    return respuesta_completa
+            live.update(Markdown(respuesta_final))
+
+    return estado_stream["texto"]
+
+def extraer_comando_agente(respuesta):
+    match = re.search(r"<EJECUTAR>(.*?)(?:</EJECUTAR>|$)", respuesta, re.DOTALL | re.IGNORECASE)
+    if match:
+        cmd = match.group(1).strip()
+        cmd = re.sub(r"^```(?:bash|sh|zsh|powershell)?\s*|\s*```$", "", cmd, flags=re.IGNORECASE).strip()
+        if cmd:
+            return cmd
+
+    match_md = re.search(r"```(?:bash|sh|zsh|powershell)?\s*\n(.*?)\n```", respuesta, re.DOTALL | re.IGNORECASE)
+    if match_md:
+        return match_md.group(1).strip()
+
+    return None
 
 def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, session):
     max_iteraciones = 8
     iteracion = 0
+    temp_efectiva = min(temperatura_actual, 0.15) if modo_agente else temperatura_actual
 
     while iteracion < max_iteraciones:
         iteracion += 1
-        respuesta = consultar_modelo(mensajes, modelo_actual, temperatura_actual)
+
+        mensajes_envio = list(mensajes)
+        if modo_agente:
+            mensajes_envio.append({
+                "role": "system",
+                "content": "RECORDATORIO: No des instrucciones al usuario. Si falta ejecutar algo para cumplir la orden, responde ÚNICAMENTE con <EJECUTAR>comando</EJECUTAR>."
+            })
+
+        respuesta = consultar_modelo(mensajes_envio, modelo_actual, temp_efectiva)
         if respuesta is None:
             mensajes.pop()
             return
 
         mensajes.append({"role": "assistant", "content": respuesta})
 
-        match = re.search(r"<EJECUTAR>(.*?)</EJECUTAR>", respuesta, re.DOTALL | re.IGNORECASE)
-        if not match or not modo_agente:
+        if not modo_agente:
             console.print()
             return
 
-        comando = match.group(1).strip()
+        comando = extraer_comando_agente(respuesta)
         if not comando:
+            console.print()
             return
 
         autorizado = auto_ejecutar
@@ -467,13 +589,18 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
             salida_comando = ejecutar_comando_sistema(comando)
             mensajes.append({
                 "role": "user",
-                "content": f"Resultado de ejecutar `{comando}`:\n\n{salida_comando}\n\nAnaliza este resultado y continúa con la tarea o responde al usuario."
+                "content": (
+                    f"SALIDA DEL SISTEMA tras ejecutar `{comando}`:\n{salida_comando}\n\n"
+                    "Si hubo un error, corrígelo ejecutando otro comando con <EJECUTAR>...</EJECUTAR>. "
+                    "Si falta el siguiente paso (ej. probar o verificar), emite <EJECUTAR>...</EJECUTAR>. "
+                    "Si ya terminó todo con éxito, informa el resultado final."
+                )
             })
         else:
             console.print("[dim]✖ Ejecución rechazada por el usuario.[/dim]\n")
             mensajes.append({
                 "role": "user",
-                "content": f"El usuario rechazó ejecutar el comando `{comando}`. Busca una alternativa o explica qué necesitas sin ejecutarlo."
+                "content": f"Comando `{comando}` rechazado por el usuario. Propón otro comando con <EJECUTAR> o detente."
             })
 
     console.print("[yellow]⚠ Se alcanzó el límite máximo de 8 pasos autónomos por turno.[/yellow]\n")
@@ -625,10 +752,7 @@ if __name__ == "__main__":
 
 '@
 Set-Content -Path $CliPyPath -Value $PythonCode -Encoding UTF8
-Write-Host "✔ Código Python generado correctamente." -ForegroundColor Green
-Write-Host ""
 
-Write-Host "[Paso 7/7] Configurando el comando global 'conejo_blanco' en el PATH de Windows..." -ForegroundColor Yellow
 $BinDir = Join-Path $AppDir "bin"
 if (-not (Test-Path $BinDir)) { New-Item -ItemType Directory -Path $BinDir | Out-Null }
 
@@ -642,7 +766,7 @@ if ($UserPath -notlike "*$BinDir*") {
     [Environment]::SetEnvironmentVariable("Path", $NewPath, "User")
     $env:Path += ";$BinDir"
 }
-Write-Host "✔ Comando global registrado." -ForegroundColor Green
+Write-Host "✔ Scripts de ejecución actualizados correctamente." -ForegroundColor Green
 Write-Host ""
 
 Write-Host "========================================================================" -ForegroundColor Cyan
