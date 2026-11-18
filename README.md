@@ -12,18 +12,20 @@ by Traker
 ![Motor](https://img.shields.io/badge/Motor-Ollama%20Local-black.svg)
 ![Modelos](https://img.shields.io/badge/Modelos-Gemma%202%20%7C%20Qwen2.5--Coder-orange.svg)
 
-**Conejo Blanco** es un cliente y **agente autónomo de línea de comandos (CLI)** 100% local para interactuar con modelos de inteligencia artificial mediante **Ollama**. Inspirado en la experiencia visual de `gemini-cli`, incluye renderizado de Markdown en tiempo real, ejecución controlada de comandos en terminal (`ReAct loop`), animación ASCII del conejo parpadeando durante los procesos, auto-arranque del motor Ollama, lectura de archivos, tuberías (`|`) y exportación de sesiones.
+**Conejo Blanco** es un cliente y **agente autónomo de línea de comandos (CLI)** 100% local para interactuar con modelos de inteligencia artificial mediante **Ollama**. Inspirado en la experiencia visual de `gemini-cli`, incluye memoria persistente compartida entre modelos, renderizado de Markdown en tiempo real, ejecución controlada de comandos en terminal (`ReAct loop`), animación ASCII del conejo parpadeando, auto-arranque del motor Ollama, lectura de archivos, tuberías (`|`) y exportación de sesiones.
 
 ---
 
 ## ✨ Novedades y Características Principales
 
+* **🧠 Memoria Persistente Compartida entre Modelos:**
+  * **Perfil de Largo Plazo (`~/.conejo_blanco/memoria_usuario.json`):** Guarda automáticamente tus preferencias, herramientas y forma de trabajar (`<RECORDAR>...</RECORDAR>` o mediante `/recordar`). Cualquier modelo que elijas (`gemma2:2b`, `qwen2.5-coder:3b`, etc.) hereda tu contexto desde el inicio.
+  * **Continuidad Episódica (`~/.conejo_blanco/historial_sesiones.jsonl`):** Conserva el registro de conversaciones recientes entre sesiones para dar continuidad inmediata sin importar si cambiaste de modelo (puedes iniciar limpio usando `--no-history`).
 * **Selector Interactivo de Modelo al Instalar/Actualizar:** Al ejecutar el instalador puedes elegir entre **`gemma2:2b`** (ultraligero ~1.6 GB) o **`qwen2.5-coder:3b`** (especializado en programación y comandos de terminal ~1.9 GB), guardando tu elección automáticamente en `config.json`.
-* **Actualización Inteligente:** Si ya tenías instalado Conejo Blanco, el instalador lo detecta automáticamente, omite la reinstalación de paquetes base y actualiza únicamente `cli.py`, el lanzador global y la configuración del modelo.
+* **Actualización Inteligente:** Si ya tenías instalado Conejo Blanco, el instalador lo detecta automáticamente, omite la reinstalación de paquetes base y actualiza únicamente `cli.py`, el lanzador global y la configuración del modelo conservando tu memoria e historial.
 * **Animación ASCII en Vivo:** Mientras el modelo piensa, arranca Ollama o ejecuta un comando en terminal, verás al conejo parpadeando `(^_^)` → `(-_-)` → `(o_o)` en tiempo real.
 * **Modo Agente Proactivo (`/agente` / `-a`):** Permite al modelo ejecutar comandos en tu terminal (`<EJECUTAR>...</EJECUTAR>`), leer la salida (`stdout`/`stderr`) e iterar sobre errores o siguientes pasos de forma autónoma con confirmación manual (`[s/N]`) o automática (`/auto` / `-y`).
 * **Auto-Arranque de Ollama:** Al ejecutar `conejo_blanco`, verifica si `ollama serve` está activo; si no lo está, lo levanta en segundo plano automáticamente.
-* **Productividad CLI:** Historial persistente (`↑` / `↓`), autocompletado con `Tab` para comandos, rutas y modelos, soporte de tuberías (`stdin`) y exportación a Markdown (`/guardar`).
 
 ---
 
@@ -119,8 +121,11 @@ conejo_blanco -a
 | :--- | :--- |
 | `/agente` | Enciende o apaga el **Modo Agente** (cambia el prompt de `❯` a `⚡`). |
 | `/auto` | Alterna entre pedir confirmación `[s/N]` antes de ejecutar cada comando o ejecutar automáticamente. |
+| `/memoria` | Muestra la tabla de hechos y preferencias guardadas en `memoria_usuario.json`. |
+| `/recordar <dato>` | Guarda manualmente una preferencia o regla permanente (ej. `/recordar Siempre usa Fish shell`). |
+| `/olvidar` | Borra la memoria persistente de largo plazo para iniciar desde cero. |
 | `/modelos` | Muestra una tabla con todos los modelos locales descargados en Ollama y su tamaño. |
-| `/modelo <nombre>` | Cambia el modelo activo en caliente conservando el historial (ej. `/modelo qwen2.5-coder:3b`). |
+| `/modelo <nombre>` | Cambia el modelo activo en caliente conservando memoria e historial (ej. `/modelo qwen2.5-coder:3b`). |
 | `/archivo <ruta>` | Lee un archivo local y lo inyecta en la memoria de la conversación actual. |
 | `/guardar [archivo.md]` | Exporta la conversación completa a un archivo Markdown con fecha y hora. |
 | `/temp <0.0 - 2.0>` | Ajusta la temperatura del modelo para la sesión actual. |
@@ -147,16 +152,24 @@ conejo_blanco -a
   tail -n 40 /var/log/syslog | conejo_blanco "Resume los errores críticos"
   ```
 
+* **Iniciar una sesión limpia sin cargar mensajes previos:**
+  ```bash
+  conejo_blanco --no-history
+  ```
+
 ---
 
-## ⚙️ Configuración Personalizada (`~/.conejo_blanco/config.json`)
+## ⚙️ Estructura de Archivos (`~/.conejo_blanco/`)
 
-```json
-{
-  "default_model": "qwen2.5-coder:3b",
-  "temperature": 0.3,
-  "system_prompt": "Eres un asistente técnico y agente de terminal directo, preciso y útil que responde en español."
-}
+```text
+~/.conejo_blanco/
+├── cli.py                     # Cliente y agente CLI multiplataforma
+├── config.json                # Modelo por defecto, temperatura y system prompt
+├── memoria_usuario.json       # Memoria persistente compartida entre todos los modelos
+├── historial_sesiones.jsonl   # Registro episódico de conversaciones recientes
+├── historial_prompts          # Historial de entradas para flechas ↑ / ↓
+├── ollama_serve.log           # Log del servidor local Ollama
+└── venv/                      # Entorno virtual aislado de Python
 ```
 
 ---

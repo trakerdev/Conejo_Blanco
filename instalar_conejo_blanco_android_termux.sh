@@ -24,7 +24,7 @@ echo -e "${CIAN}${NEGRITA}=== INSTALADOR / ACTUALIZADOR DE CONEJO BLANCO (ANDROI
 MODO_ACTUALIZACION=false
 if [ -f "$APP_DIR/cli.py" ] && [ -x "$APP_DIR/venv/bin/python" ] && command -v ollama &> /dev/null; then
     MODO_ACTUALIZACION=true
-    echo -e "${VERDE}ℹ Instalación previa detectada en ${APP_DIR}. Se actualizarán los scripts manteniendo tu entorno.${RESET}\n"
+    echo -e "${VERDE}ℹ Instalación previa detectada en ${APP_DIR}. Se actualizarán los scripts manteniendo tu entorno y memoria.${RESET}\n"
 fi
 
 echo -e "${AMARILLO}Selecciona el modelo de IA local predeterminado para Conejo Blanco:${RESET}"
@@ -126,6 +126,8 @@ OLLAMA_TAGS_URL = f"{OLLAMA_BASE}/api/tags"
 APP_DIR = os.path.expanduser("~/.conejo_blanco")
 HISTORY_FILE = os.path.join(APP_DIR, "historial_prompts")
 CONFIG_FILE = os.path.join(APP_DIR, "config.json")
+MEMORY_FILE = os.path.join(APP_DIR, "memoria_usuario.json")
+SESSION_LOG_FILE = os.path.join(APP_DIR, "historial_sesiones.jsonl")
 OLLAMA_LOG = os.path.join(APP_DIR, "ollama_serve.log")
 
 DEFAULT_CONFIG = {
@@ -176,6 +178,9 @@ console = Console()
 COMANDOS_INTERNOS = {
     "/agente": "Activa/desactiva el modo agente ejecutor de comandos",
     "/auto": "Activa/desactiva la ejecución automática sin pedir confirmación",
+    "/memoria": "Muestra los hechos y preferencias recordadas sobre ti",
+    "/recordar": "Guarda un dato permanente en memoria (ej. /recordar Uso Fish shell)",
+    "/olvidar": "Borra la memoria persistente de largo plazo",
     "/modelos": "Lista los modelos descargados en Ollama",
     "/modelo": "Cambia el modelo activo (ej. /modelo qwen2.5-coder:3b)",
     "/temp": "Ajusta la temperatura en caliente (ej. /temp 0.2)",
@@ -205,8 +210,78 @@ def render_conejo_animado(tick, mensaje_estado):
     t.append(f"{lineas[2]}", style="bold cyan")
     return t
 
+def cargar_memoria_largo_plazo():
+    if not os.path.isfile(MEMORY_FILE):
+        return []
+    try:
+        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("hechos", [])
+    except Exception:
+        return []
+
+def guardar_hecho_memoria(nuevo_hecho):
+    nuevo_hecho = nuevo_hecho.strip()
+    if not nuevo_hecho:
+        return False
+    hechos = cargar_memoria_largo_plazo()
+    if nuevo_hecho not in hechos:
+        hechos.append(nuevo_hecho)
+        hechos = hechos[-40:]
+        os.makedirs(APP_DIR, exist_ok=True)
+        with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+            json.dump({
+                "ultima_actualizacion": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "hechos": hechos
+            }, f, indent=2, ensure_ascii=False)
+        return True
+    return False
+
+def registrar_turno_sesion(rol, contenido, modelo):
+    if rol not in ("user", "assistant"):
+        return
+    os.makedirs(APP_DIR, exist_ok=True)
+    entrada = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "modelo": modelo,
+        "role": rol,
+        "content": contenido[:2000]
+    }
+    try:
+        with open(SESSION_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(entrada, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+def cargar_contexto_reciente(limite_mensajes=6):
+    if not os.path.isfile(SESSION_LOG_FILE):
+        return []
+    try:
+        with open(SESSION_LOG_FILE, "r", encoding="utf-8") as f:
+            lineas = f.readlines()[-limite_mensajes:]
+        recientes = []
+        for linea in lineas:
+            item = json.loads(linea)
+            recientes.append({"role": item["role"], "content": item["content"]})
+        return recientes
+    except Exception:
+        return []
+
+def mostrar_memoria():
+    hechos = cargar_memoria_largo_plazo()
+    if not hechos:
+        console.print("[yellow]La memoria persistente está vacía. Usa [bold]/recordar <dato>[/bold] o conversa con el asistente.[/yellow]\n")
+        return
+    tabla = Table(title=f"🧠 Memoria Persistente del Usuario ({MEMORY_FILE})", border_style="cyan")
+    tabla.add_column("#", justify="right", style="dim")
+    tabla.add_column("Dato / Preferencia Aprendida", style="white")
+    for idx, hecho in enumerate(hechos, 1):
+        tabla.add_row(str(idx), hecho)
+    console.print()
+    console.print(tabla)
+    console.print("[dim]Esta memoria se comparte automáticamente entre todos los modelos instalados.[/dim]\n")
+
 def asegurar_ollama_activo():
-    """Valida si Ollama responde; si no, lo inicia en segundo plano y espera con animación."""
     try:
         requests.get(OLLAMA_BASE, timeout=1.5)
         return
@@ -281,10 +356,29 @@ def cargar_configuracion():
         return DEFAULT_CONFIG.copy()
 
 def construir_system_prompt(base_prompt, modo_agente):
-    if not modo_agente:
-        return base_prompt
-    extra = INSTRUCCIONES_AGENTE.format(os_name=detectar_so(), cwd=os.getcwd())
-    return f"{base_prompt}\n\n{extra}"
+    hechos = cargar_memoria_largo_plazo()
+    bloque_memoria = ""
+    if hechos:
+        lista_hechos = "\n".join(f"- {h}" for h in hechos)
+        bloque_memoria = (
+            "\n\nMEMORIA PERSISTENTE SOBRE EL USUARIO Y SU FORMA DE TRABAJO:\n"
+            f"{lista_hechos}\n"
+            "Aplica siempre estas preferencias y contexto del usuario sin volver a preguntarlos."
+        )
+
+    instruccion_aprendizaje = (
+        "\n\nSi el usuario menciona una preferencia permanente, herramienta, ruta o forma de trabajo "
+        "(ej. 'siempre usa Fish', 'mi servidor está en /mnt/HDD', 'me dicen Traker'), "
+        "incluye al final de tu respuesta la etiqueta <RECORDAR>resumen corto del dato</RECORDAR>."
+    )
+
+    prompt_final = f"{base_prompt}{bloque_memoria}{instruccion_aprendizaje}"
+
+    if modo_agente:
+        extra = INSTRUCCIONES_AGENTE.format(os_name=detectar_so(), cwd=os.getcwd())
+        prompt_final = f"{prompt_final}\n\n{extra}"
+
+    return prompt_final
 
 class ConejoCompleter(Completer):
     def __init__(self):
@@ -314,14 +408,15 @@ class ConejoCompleter(Completer):
 def mostrar_banner(modelo_actual, temperatura, modo_agente, auto_ejecutar):
     estado_agente = "[bold green]ON[/bold green]" if modo_agente else "[dim]OFF[/dim]"
     estado_auto = "[bold red]AUTO[/bold red]" if auto_ejecutar else "[cyan]MANUAL[/cyan]"
+    num_hechos = len(cargar_memoria_largo_plazo())
 
     banner_text = Text.from_markup(
         f"[bold bright_white]{ASCII_ART}[/bold bright_white]\n\n"
         f"[bold cyan]Modelo:[/bold cyan] {modelo_actual} | [bold cyan]Temp:[/bold cyan] {temperatura} | "
-        f"[bold cyan]Agente:[/bold cyan] {estado_agente} ({estado_auto})\n"
+        f"[bold cyan]Agente:[/bold cyan] {estado_agente} ({estado_auto}) | [bold cyan]Memoria:[/bold cyan] {num_hechos} hechos\n"
         f"[dim]Comandos (Tab):[/dim] [bold yellow]/agente[/bold yellow] | [bold yellow]/auto[/bold yellow] | "
-        f"[bold yellow]/modelos[/bold yellow] | [bold yellow]/modelo[/bold yellow] | [bold yellow]/archivo[/bold yellow] | "
-        f"[bold yellow]/guardar[/bold yellow] | [bold yellow]/limpiar[/bold yellow] | [bold yellow]/salir[/bold yellow]"
+        f"[bold yellow]/memoria[/bold yellow] | [bold yellow]/recordar[/bold yellow] | [bold yellow]/modelos[/bold yellow] | "
+        f"[bold yellow]/modelo[/bold yellow] | [bold yellow]/archivo[/bold yellow] | [bold yellow]/guardar[/bold yellow] | [bold yellow]/salir[/bold yellow]"
     )
     console.print(Panel(banner_text, border_style="cyan", expand=False))
     console.print()
@@ -333,7 +428,8 @@ def mostrar_config(modelo_actual, temperatura, system_prompt):
     tabla.add_row("Sistema detectado", detectar_so())
     tabla.add_row("Modelo activo", modelo_actual)
     tabla.add_row("Temperatura", str(temperatura))
-    tabla.add_row("System Prompt", system_prompt)
+    tabla.add_row("Hechos en memoria", str(len(cargar_memoria_largo_plazo())))
+    tabla.add_row("System Prompt Base", system_prompt)
     console.print()
     console.print(tabla)
     console.print("[dim]Edita ~/.conejo_blanco/config.json para cambiar tus valores permanentes.[/dim]\n")
@@ -514,12 +610,14 @@ def consultar_modelo(mensajes, modelo, temperatura):
     with Live(render_conejo_animado(0, f"Pensando con {modelo}..."), console=console, refresh_per_second=10) as live:
         while not estado_stream["finalizado"]:
             texto_actual = estado_stream["texto"]
+            # Limpiar etiquetas <RECORDAR> en tiempo real de la vista previa
+            vista_limpia = re.sub(r"<RECORDAR>.*?(?:</RECORDAR>|$)", "", texto_actual, flags=re.DOTALL | re.IGNORECASE).strip()
             if not estado_stream["primer_token"]:
                 live.update(render_conejo_animado(tick, f"Pensando con {modelo}..."))
             elif "<EJECUTAR>" in texto_actual:
                 live.update(render_conejo_animado(tick, "Preparando comando de terminal..."))
             else:
-                live.update(Markdown(texto_actual + " ▌"))
+                live.update(Markdown(vista_limpia + " ▌"))
             tick += 1
             time.sleep(0.15)
 
@@ -534,10 +632,11 @@ def consultar_modelo(mensajes, modelo, temperatura):
             raise estado_stream["error"]
 
         respuesta_final = estado_stream["texto"]
+        vista_final_limpia = re.sub(r"<RECORDAR>.*?</RECORDAR>", "", respuesta_final, flags=re.DOTALL | re.IGNORECASE).strip()
         if "<EJECUTAR>" in respuesta_final:
             live.update(Text(""))
         else:
-            live.update(Markdown(respuesta_final))
+            live.update(Markdown(vista_final_limpia))
 
     return estado_stream["texto"]
 
@@ -555,7 +654,7 @@ def extraer_comando_agente(respuesta):
 
     return None
 
-def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, session):
+def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, session, base_prompt):
     max_iteraciones = 8
     iteracion = 0
     temp_efectiva = min(temperatura_actual, 0.15) if modo_agente else temperatura_actual
@@ -575,13 +674,22 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
             mensajes.pop()
             return
 
-        mensajes.append({"role": "assistant", "content": respuesta})
+        # Extraer aprendizajes automáticos (<RECORDAR>...</RECORDAR>)
+        for match_rec in re.finditer(r"<RECORDAR>(.*?)</RECORDAR>", respuesta, re.DOTALL | re.IGNORECASE):
+            dato = match_rec.group(1).strip()
+            if guardar_hecho_memoria(dato):
+                console.print(f"[dim cyan]🧠 Memoria actualizada: {dato}[/dim cyan]")
+                mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
+
+        respuesta_limpia = re.sub(r"<RECORDAR>.*?</RECORDAR>", "", respuesta, flags=re.DOTALL | re.IGNORECASE).strip()
+        mensajes.append({"role": "assistant", "content": respuesta_limpia})
+        registrar_turno_sesion("assistant", respuesta_limpia, modelo_actual)
 
         if not modo_agente:
             console.print()
             return
 
-        comando = extraer_comando_agente(respuesta)
+        comando = extraer_comando_agente(respuesta_limpia)
         if not comando:
             console.print()
             return
@@ -615,7 +723,7 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
 def main():
     config = cargar_configuracion()
 
-    parser = argparse.ArgumentParser(prog="conejo_blanco", description="Agente y Cliente CLI local para Ollama.")
+    parser = argparse.ArgumentParser(prog="conejo_blanco", description="Agente y Cliente CLI local para Ollama con memoria persistente.")
     parser.add_argument("prompt", nargs="*", help="Instrucción directa.")
     parser.add_argument("-m", "--model", default=config["default_model"], help="Modelo local.")
     parser.add_argument("-t", "--temperature", type=float, default=float(config["temperature"]), help="Temperatura.")
@@ -623,6 +731,7 @@ def main():
     parser.add_argument("-y", "--yes", action="store_true", help="Autoriza automáticamente los comandos del agente.")
     parser.add_argument("-l", "--list-models", action="store_true", help="Lista modelos locales.")
     parser.add_argument("-f", "--file", action="append", help="Archivos de contexto.")
+    parser.add_argument("--no-history", action="store_true", help="Inicia sin cargar el contexto reciente de sesiones previas.")
     args = parser.parse_args()
 
     asegurar_ollama_activo()
@@ -640,6 +749,12 @@ def main():
     mensajes = [
         {"role": "system", "content": construir_system_prompt(base_prompt, modo_agente)}
     ]
+
+    # Cargar contexto reciente de sesiones anteriores para dar continuidad entre modelos
+    if not args.no_history:
+        recientes = cargar_contexto_reciente(limite_mensajes=6)
+        if recientes:
+            mensajes.extend(recientes)
 
     contexto_extra = []
     if not sys.stdin.isatty():
@@ -670,8 +785,9 @@ def main():
         bloque_contexto = "\n\n".join(contexto_extra)
         mensaje_usuario = f"{bloque_contexto}\n\n{prompt_inicial}".strip()
         mensajes.append({"role": "user", "content": mensaje_usuario})
+        registrar_turno_sesion("user", mensaje_usuario, modelo_actual)
         console.print()
-        procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, session)
+        procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, session, base_prompt)
         return
 
     mostrar_banner(modelo_actual, temperatura_actual, modo_agente, auto_ejecutar)
@@ -699,6 +815,23 @@ def main():
                     mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
                 estado = "[bold red]AUTOMÁTICO (sin confirmación)[/bold red]" if auto_ejecutar else "[cyan]MANUAL (pide confirmación)[/cyan]"
                 console.print(f"Ejecución de comandos: {estado}\n")
+                continue
+            if entrada.lower() == '/memoria':
+                mostrar_memoria()
+                continue
+            if entrada.lower().startswith('/recordar '):
+                dato = entrada[10:].strip()
+                if guardar_hecho_memoria(dato):
+                    mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
+                    console.print(f"[green]🧠 Guardado en memoria permanente:[/green] [white]{dato}[/white]\n")
+                else:
+                    console.print("[yellow]Ese dato ya estaba en memoria o está vacío.[/yellow]\n")
+                continue
+            if entrada.lower() == '/olvidar':
+                if os.path.isfile(MEMORY_FILE):
+                    os.remove(MEMORY_FILE)
+                mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
+                console.print("[yellow]🧹 Memoria persistente de largo plazo borrada.[/yellow]\n")
                 continue
             if entrada.lower() == '/limpiar':
                 mensajes = [{"role": "system", "content": construir_system_prompt(base_prompt, modo_agente)}]
@@ -730,7 +863,8 @@ def main():
                 nuevo_modelo = entrada[8:].strip()
                 if validar_modelo(nuevo_modelo):
                     modelo_actual = nuevo_modelo
-                    console.print(f"[green]✔ Modelo cambiado a [bold]{modelo_actual}[/bold].[/green]\n")
+                    mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
+                    console.print(f"[green]✔ Modelo cambiado a [bold]{modelo_actual}[/bold] (memoria y contexto conservados).[/green]\n")
                 else:
                     console.print(f"[red]✖ El modelo '{nuevo_modelo}' no está instalado.[/red]\n")
                 continue
@@ -746,8 +880,9 @@ def main():
                 continue
 
             mensajes.append({"role": "user", "content": entrada})
+            registrar_turno_sesion("user", entrada, modelo_actual)
             console.print()
-            procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, session)
+            procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, session, base_prompt)
 
         except KeyboardInterrupt:
             console.print("\n[dim]Usa /salir para cerrar.[/dim]")
