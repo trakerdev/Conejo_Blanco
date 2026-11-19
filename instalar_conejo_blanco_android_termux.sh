@@ -96,6 +96,7 @@ cat << 'EOF_PY' > "$APP_DIR/cli.py"
 import sys
 import os
 import re
+import math
 import json
 import time
 import shutil
@@ -164,13 +165,11 @@ ASCII_ART = r"""(\_/)
 />Conejo_blanco;
 by Traker"""
 
-FRAMES_CONEJO = [
-    "(\\_/)\n(^_^)\n/>   ",
-    "(\\_/)\n(^_^)\n/>   ",
-    "(\\_/)\n(^_^)\n/>   ",
-    "(\\_/)\n(-_-)\n/>   ",
-    "(\\_/)\n(^_^)\n/>   ",
-    "(\\_/)\n(o_o)\n/>   "
+BRAILLE_MAP = [
+    [0x01, 0x08],
+    [0x02, 0x10],
+    [0x04, 0x20],
+    [0x40, 0x80],
 ]
 
 console = Console()
@@ -200,14 +199,30 @@ def detectar_so():
         return "Android / Termux (bash)"
     return "Linux / Unix (bash)"
 
-def render_conejo_animado(tick, mensaje_estado):
-    frame = FRAMES_CONEJO[tick % len(FRAMES_CONEJO)]
-    lineas = frame.split("\n")
+def generar_frame_onda(tick):
+    """Genera la onda sinusoidal Braille en una sola línea (3 celdas = 4x6 puntos)."""
+    phase = (tick * 0.24) % (math.pi * 2)
+    dots = [[False] * 6 for _ in range(4)]
+    for x in range(6):
+        y = (0.5 - math.sin(((x + 0.5) / 6.0) * 7.2257 - phase) * 0.42) * 3.0
+        r = max(0, min(3, round(y)))
+        dots[r][x] = True
+
+    out = ""
+    for c in range(3):
+        mask = 0
+        for dy in range(4):
+            for dx in range(2):
+                if dots[dy][c * 2 + dx]:
+                    mask |= BRAILLE_MAP[dy][dx]
+        out += chr(0x2800 + mask)
+    return out
+
+def render_onda_animada(tick, mensaje_estado):
+    onda = generar_frame_onda(tick)
     t = Text()
-    t.append(f"{lineas[0]}\n", style="bold bright_white")
-    t.append(f"{lineas[1]}  ", style="bold bright_white")
-    t.append(f"{mensaje_estado}\n", style="bold cyan")
-    t.append(f"{lineas[2]}", style="bold cyan")
+    t.append(f"{onda} ", style="bold #10b981")
+    t.append(mensaje_estado, style="bold cyan")
     return t
 
 def cargar_memoria_largo_plazo():
@@ -300,7 +315,7 @@ def asegurar_ollama_activo():
         sys.exit(1)
 
     os.makedirs(APP_DIR, exist_ok=True)
-    with Live(render_conejo_animado(0, "Despertando motor local de Ollama..."), console=console, refresh_per_second=6) as live:
+    with Live(render_onda_animada(0, "Despertando motor local de Ollama..."), console=console, refresh_per_second=16) as live:
         try:
             with open(OLLAMA_LOG, "a", encoding="utf-8") as log_file:
                 if sys.platform == "win32":
@@ -323,15 +338,16 @@ def asegurar_ollama_activo():
             console.print(f"[bold red]Error al intentar arrancar Ollama:[/bold red] {e}")
             sys.exit(1)
 
-        for tick in range(45):
-            time.sleep(0.35)
-            live.update(render_conejo_animado(tick, "Despertando motor local de Ollama..."))
-            try:
-                requests.get(OLLAMA_BASE, timeout=0.8)
-                live.update(Text(""))
-                return
-            except requests.exceptions.RequestException:
-                continue
+        for tick in range(150):
+            time.sleep(0.1)
+            live.update(render_onda_animada(tick, "Despertando motor local de Ollama..."))
+            if tick % 5 == 0:
+                try:
+                    requests.get(OLLAMA_BASE, timeout=0.6)
+                    live.update(Text(""))
+                    return
+                except requests.exceptions.RequestException:
+                    continue
 
     console.print("[bold red]Error:[/bold red] Ollama tardó demasiado en responder.")
     console.print(f"Revisa el registro en [cyan]{OLLAMA_LOG}[/cyan] o ejecuta [cyan]ollama serve[/cyan] manualmente.")
@@ -535,11 +551,11 @@ def ejecutar_comando_sistema(comando):
     hilo.start()
 
     tick = 0
-    with Live(render_conejo_animado(0, "Ejecutando proceso en terminal..."), console=console, refresh_per_second=6) as live:
+    with Live(render_onda_animada(0, "Ejecutando proceso en terminal..."), console=console, refresh_per_second=16) as live:
         while not terminado.is_set():
-            live.update(render_conejo_animado(tick, "Ejecutando proceso en terminal..."))
+            live.update(render_onda_animada(tick, "Ejecutando proceso en terminal..."))
             tick += 1
-            terminado.wait(0.25)
+            terminado.wait(0.06)
         live.update(Text(""))
 
     if "err" in error_box:
@@ -607,19 +623,18 @@ def consultar_modelo(mensajes, modelo, temperatura):
     hilo.start()
 
     tick = 0
-    with Live(render_conejo_animado(0, f"Pensando con {modelo}..."), console=console, refresh_per_second=10) as live:
+    with Live(render_onda_animada(0, f"Procesando con {modelo}..."), console=console, refresh_per_second=16) as live:
         while not estado_stream["finalizado"]:
             texto_actual = estado_stream["texto"]
-            # Limpiar etiquetas <RECORDAR> en tiempo real de la vista previa
             vista_limpia = re.sub(r"<RECORDAR>.*?(?:</RECORDAR>|$)", "", texto_actual, flags=re.DOTALL | re.IGNORECASE).strip()
             if not estado_stream["primer_token"]:
-                live.update(render_conejo_animado(tick, f"Pensando con {modelo}..."))
+                live.update(render_onda_animada(tick, f"Procesando con {modelo}..."))
             elif "<EJECUTAR>" in texto_actual:
-                live.update(render_conejo_animado(tick, "Preparando comando de terminal..."))
+                live.update(render_onda_animada(tick, "Preparando comando de terminal..."))
             else:
                 live.update(Markdown(vista_limpia + " ▌"))
             tick += 1
-            time.sleep(0.15)
+            time.sleep(0.06)
 
         if estado_stream["not_found"]:
             live.update(Text(""))
@@ -674,7 +689,6 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
             mensajes.pop()
             return
 
-        # Extraer aprendizajes automáticos (<RECORDAR>...</RECORDAR>)
         for match_rec in re.finditer(r"<RECORDAR>(.*?)</RECORDAR>", respuesta, re.DOTALL | re.IGNORECASE):
             dato = match_rec.group(1).strip()
             if guardar_hecho_memoria(dato):
@@ -750,7 +764,6 @@ def main():
         {"role": "system", "content": construir_system_prompt(base_prompt, modo_agente)}
     ]
 
-    # Cargar contexto reciente de sesiones anteriores para dar continuidad entre modelos
     if not args.no_history:
         recientes = cargar_contexto_reciente(limite_mensajes=6)
         if recientes:

@@ -12,18 +12,18 @@ by Traker
 ![Motor](https://img.shields.io/badge/Motor-Ollama%20Local-black.svg)
 ![Modelos](https://img.shields.io/badge/Modelos-Gemma%202%20%7C%20Qwen2.5--Coder-orange.svg)
 
-**Conejo Blanco** es un cliente y **agente autónomo de línea de comandos (CLI)** 100% local para interactuar con modelos de inteligencia artificial mediante **Ollama**. Inspirado en la experiencia visual de `gemini-cli`, incluye memoria persistente compartida entre modelos, renderizado de Markdown en tiempo real, ejecución controlada de comandos en terminal (`ReAct loop`), animación ASCII del conejo parpadeando, auto-arranque del motor Ollama, lectura de archivos, tuberías (`|`) y exportación de sesiones.
+**Conejo Blanco** es un cliente y **agente autónomo de línea de comandos (CLI)** 100% local para interactuar con modelos de inteligencia artificial mediante **Ollama**. Inspirado en la experiencia visual de `gemini-cli`, incluye memoria persistente compartida entre modelos, renderizado de Markdown en tiempo real, ejecución controlada de comandos en terminal (`ReAct loop`), animación de onda Braille compacta en una línea (`#10b981`), auto-arranque del motor Ollama, lectura de archivos, tuberías (`|`) y exportación de sesiones.
 
 ---
 
 ## ✨ Novedades y Características Principales
 
+* **🌊 Animación de Onda Braille en Una Línea:** Mientras el modelo procesa solicitudes, arranca Ollama o ejecuta comandos en terminal, se renderiza una onda sinusoidal compacta de 3 celdas Braille (`4x6` puntos en una sola línea) en color esmeralda (`#10b981`).
 * **🧠 Memoria Persistente Compartida entre Modelos:**
   * **Perfil de Largo Plazo (`~/.conejo_blanco/memoria_usuario.json`):** Guarda automáticamente tus preferencias, herramientas y forma de trabajar (`<RECORDAR>...</RECORDAR>` o mediante `/recordar`). Cualquier modelo que elijas (`gemma2:2b`, `qwen2.5-coder:3b`, etc.) hereda tu contexto desde el inicio.
   * **Continuidad Episódica (`~/.conejo_blanco/historial_sesiones.jsonl`):** Conserva el registro de conversaciones recientes entre sesiones para dar continuidad inmediata sin importar si cambiaste de modelo (puedes iniciar limpio usando `--no-history`).
 * **Selector Interactivo de Modelo al Instalar/Actualizar:** Al ejecutar el instalador puedes elegir entre **`gemma2:2b`** (ultraligero ~1.6 GB) o **`qwen2.5-coder:3b`** (especializado en programación y comandos de terminal ~1.9 GB), guardando tu elección automáticamente en `config.json`.
 * **Actualización Inteligente:** Si ya tenías instalado Conejo Blanco, el instalador lo detecta automáticamente, omite la reinstalación de paquetes base y actualiza únicamente `cli.py`, el lanzador global y la configuración del modelo conservando tu memoria e historial.
-* **Animación ASCII en Vivo:** Mientras el modelo piensa, arranca Ollama o ejecuta un comando en terminal, verás al conejo parpadeando `(^_^)` → `(-_-)` → `(o_o)` en tiempo real.
 * **Modo Agente Proactivo (`/agente` / `-a`):** Permite al modelo ejecutar comandos en tu terminal (`<EJECUTAR>...</EJECUTAR>`), leer la salida (`stdout`/`stderr`) e iterar sobre errores o siguientes pasos de forma autónoma con confirmación manual (`[s/N]`) o automática (`/auto` / `-y`).
 * **Auto-Arranque de Ollama:** Al ejecutar `conejo_blanco`, verifica si `ollama serve` está activo; si no lo está, lo levanta en segundo plano automáticamente.
 
@@ -75,7 +75,7 @@ chmod +x instalar_conejo_blanco_mac.sh
 ### 3. 🪟 Windows 10 / 11
 
 **Requisitos y recomendaciones:**
-* Ejecútalo en **Windows Terminal** (PowerShell) para visualizar correctamente los caracteres Unicode y la animación ASCII.
+* Ejecútalo en **Windows Terminal** (PowerShell) para visualizar correctamente los caracteres Braille Unicode (`U+2800`–`U+28FF`) y los colores ANSI.
 * Utiliza `winget` para instalar Python 3.12 y Ollama si no están en el sistema.
 
 ```powershell
