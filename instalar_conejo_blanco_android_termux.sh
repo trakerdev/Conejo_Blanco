@@ -1,5 +1,6 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -e
+CONEJO_VERSION="1.9.0"
 
 VERDE='\033[0;32m'
 CIAN='\033[0;36m'
@@ -19,7 +20,7 @@ by Traker
 EOF
 echo -e "${RESET}"
 
-echo -e "${CIAN}${NEGRITA}=== INSTALADOR / ACTUALIZADOR DE CONEJO BLANCO (ANDROID / TERMUX) ===${RESET}\n"
+echo -e "${CIAN}${NEGRITA}=== INSTALADOR / ACTUALIZADOR DE CONEJO BLANCO v${CONEJO_VERSION} (ANDROID / TERMUX) ===${RESET}\n"
 
 MODO_ACTUALIZACION=false
 if [ -f "$APP_DIR/cli.py" ] && [ -x "$APP_DIR/venv/bin/python" ] && command -v ollama &> /dev/null; then
@@ -100,6 +101,7 @@ import math
 import json
 import time
 import shutil
+import tempfile
 import threading
 import argparse
 import subprocess
@@ -120,9 +122,13 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
+VERSION = "1.9.0"
+GITHUB_RAW_BASE = "https://raw.githubusercontent.com/TrakerDev/conejo_blanco/main"
+
 OLLAMA_BASE = "http://localhost:11434"
 OLLAMA_CHAT_URL = f"{OLLAMA_BASE}/api/chat"
 OLLAMA_TAGS_URL = f"{OLLAMA_BASE}/api/tags"
+OLLAMA_PULL_URL = f"{OLLAMA_BASE}/api/pull"
 
 APP_DIR = os.path.expanduser("~/.conejo_blanco")
 HISTORY_FILE = os.path.join(APP_DIR, "historial_prompts")
@@ -137,27 +143,42 @@ DEFAULT_CONFIG = {
     "system_prompt": "Eres un asistente técnico y agente de terminal directo, preciso y útil que responde en español."
 }
 
+MODELOS_SUGERIDOS = {
+    "gemma2:2b": "Google Gemma 2 (2B) - Ultraligero ~1.6 GB",
+    "qwen2.5-coder:3b": "Qwen 2.5 Coder (3B) - Ideal para código y agente ~1.9 GB",
+    "qwen2.5-coder:7b": "Qwen 2.5 Coder (7B) - Alta precisión técnica ~4.7 GB",
+    "llama3.2:3b": "Meta Llama 3.2 (3B) - Propósito general rápido ~2.0 GB",
+    "llama3.2:1b": "Meta Llama 3.2 (1B) - Mínimo consumo de RAM ~1.3 GB",
+    "deepseek-coder-v2": "DeepSeek Coder V2 - Especializado en programación",
+    "phi3.5": "Microsoft Phi-3.5 (3.8B) - Razonamiento compacto ~2.2 GB",
+    "mistral": "Mistral (7B) - Modelo general robusto ~4.1 GB"
+}
+
 INSTRUCCIONES_AGENTE = """
 ERES UN AGENTE EJECUTOR DE TERMINAL CON ACCESO TOTAL AL SISTEMA ({os_name} en {cwd}).
 NUNCA digas "no tengo acceso", "no puedo descargar" ni le des instrucciones al usuario para que las haga él. TÚ TIENES ACCESO DIRECTO A LA TERMINAL MEDIANTE LA ETIQUETA <EJECUTAR>.
 
-Para realizar cualquier acción (instalar paquetes, clonar repositorios, probar scripts, verificar archivos), responde ÚNICAMENTE con:
-<EJECUTAR>comando_exacto</EJECUTAR>
+PROTOCOLO OBLIGATORIO EN CADA TAREA:
+1. En el PRIMER paso de una solicitud del usuario, define un plan de acción breve y claro en lista numerada dentro de <PLAN>...</PLAN>, seguido inmediatamente del PRIMER comando a ejecutar dentro de <EJECUTAR>...</EJECUTAR>.
+2. En los pasos siguientes tras recibir la salida del sistema, NO repitas <PLAN>; responde ÚNICAMENTE con <EJECUTAR>siguiente_comando</EJECUTAR> hasta completar la tarea.
+3. Cuando todos los pasos del plan estén verificados y terminados, responde al usuario en español normal sin etiquetas.
 
 EJEMPLOS OBLIGATORIOS DE COMPORTAMIENTO:
-Usuario: instala gTTS desde github y haz una prueba
-Asistente: <EJECUTAR>pip install git+https://github.com/pndurette/gTTS.git</EJECUTAR>
+Usuario: instala gTTS desde github y haz una prueba de audio
+Asistente: <PLAN>
+1. Instalar la librería gTTS directamente desde su repositorio oficial de GitHub.
+2. Verificar la instalación comprobando la versión de gtts-cli.
+3. Generar un archivo de audio de prueba en español para validar el funcionamiento.
+</PLAN>
+<EJECUTAR>pip install git+https://github.com/pndurette/gTTS.git</EJECUTAR>
 
-Usuario: revisa si se instaló bien
+Usuario: [SALIDA DEL SISTEMA: Successfully installed gTTS-2.5.4]
 Asistente: <EJECUTAR>gtts-cli --version</EJECUTAR>
 
-Usuario: crea un audio de prueba diciendo hola
-Asistente: <EJECUTAR>gtts-cli "Hola Traker, prueba de voz exitosa" --lang es --output prueba.mp3</EJECUTAR>
-
-REGLAS:
+REGLAS ESTRICTAS:
 - Emite UN solo comando por turno dentro de <EJECUTAR>...</EJECUTAR>.
-- No saludes ni expliques antes de emitir <EJECUTAR>.
-- Solo responde en texto normal cuando la tarea esté 100% terminada y verificada.
+- NUNCA repitas un comando que ya ejecutaste en este turno. Si falló, cambia de estrategia o corrige los parámetros.
+- No agregues explicaciones fuera de <PLAN> mientras ejecutas comandos.
 """
 
 ASCII_ART = r"""(\_/)
@@ -175,13 +196,15 @@ BRAILLE_MAP = [
 console = Console()
 
 COMANDOS_INTERNOS = {
-    "/agente": "Activa/desactiva el modo agente ejecutor de comandos",
+    "/agente": "Activa/desactiva el modo agente ejecutor con plan de acción",
     "/auto": "Activa/desactiva la ejecución automática sin pedir confirmación",
+    "/instalar": "Descarga e instala un modelo nuevo en Ollama (ej. /instalar qwen2.5-coder:3b)",
+    "/modelos": "Lista los modelos descargados localmente en Ollama",
+    "/modelo": "Cambia el modelo activo (ej. /modelo qwen2.5-coder:3b)",
+    "/actualizar": "Verifica en GitHub si hay una versión nueva y actualiza este sistema",
     "/memoria": "Muestra los hechos y preferencias recordadas sobre ti",
     "/recordar": "Guarda un dato permanente en memoria (ej. /recordar Uso Fish shell)",
     "/olvidar": "Borra la memoria persistente de largo plazo",
-    "/modelos": "Lista los modelos descargados en Ollama",
-    "/modelo": "Cambia el modelo activo (ej. /modelo qwen2.5-coder:3b)",
     "/temp": "Ajusta la temperatura en caliente (ej. /temp 0.2)",
     "/config": "Muestra la configuración activa y ruta de config.json",
     "/archivo": "Carga un archivo al contexto de la sesión",
@@ -198,6 +221,80 @@ def detectar_so():
     elif "com.termux" in os.environ.get("PREFIX", ""):
         return "Android / Termux (bash)"
     return "Linux / Unix (bash)"
+
+def obtener_script_instalador_so():
+    if sys.platform == "win32":
+        return "instalar_conejo_blanco_windows.ps1"
+    elif sys.platform == "darwin":
+        return "instalar_conejo_blanco_mac.sh"
+    elif "com.termux" in os.environ.get("PREFIX", ""):
+        return "instalar_conejo_blanco_android_termux.sh"
+    return "instalar_conejo_blanco_linux.sh"
+
+def parsear_version(v_str):
+    try:
+        return tuple(int(x) for x in re.findall(r"\d+", v_str))
+    except Exception:
+        return (0, 0, 0)
+
+def verificar_y_actualizar(forzar=False):
+    script_nombre = obtener_script_instalador_so()
+    url_script = f"{GITHUB_RAW_BASE}/{script_nombre}"
+
+    console.print(f"[cyan]🔍 Buscando actualizaciones en GitHub para [bold]{detectar_so()}[/bold]...[/cyan]")
+    console.print(f"[dim]Archivo objetivo: {script_nombre} (Versión local: v{VERSION})[/dim]")
+
+    try:
+        resp = requests.get(url_script, timeout=10)
+        if resp.status_code == 404:
+            console.print(f"[bold red]Error:[/bold red] No se encontró [cyan]{script_nombre}[/cyan] en el repositorio de GitHub.\n")
+            return
+        resp.raise_for_status()
+        contenido_remoto = resp.text
+    except Exception as e:
+        console.print(f"[bold red]Error de conexión con GitHub:[/bold red] {e}\n")
+        return
+
+    match_ver = re.search(r'CONEJO_VERSION\s*=\s*["\']?([0-9]+\.[0-9]+\.[0-9]+)["\']?', contenido_remoto)
+    if not match_ver:
+        match_ver = re.search(r'VERSION\s*=\s*["\']([0-9]+\.[0-9]+\.[0-9]+)["\']', contenido_remoto)
+
+    version_remota = match_ver.group(1) if match_ver else None
+
+    if version_remota:
+        console.print(f"[cyan]📦 Versión disponible en GitHub:[/cyan] [bold green]v{version_remota}[/bold green]")
+        if not forzar and parsear_version(version_remota) <= parsear_version(VERSION):
+            console.print(f"[green]✔ Ya tienes la última versión instalada (v{VERSION}).[/green]\n")
+            return
+    else:
+        console.print("[yellow]⚠ No se detectó etiqueta de versión en el script remoto.[/yellow]")
+        if not forzar:
+            console.print("[dim]Usa [bold]/actualizar --forzar[/bold] si deseas reinstalar de todos modos.[/dim]\n")
+            return
+
+    console.print(f"\n[bold yellow]⚡ Descargando e iniciando actualización automática ({script_nombre})...[/bold yellow]\n")
+
+    try:
+        tmp_dir = tempfile.mkdtemp(prefix="conejo_update_")
+        ruta_script = os.path.join(tmp_dir, script_nombre)
+        with open(ruta_script, "w", encoding="utf-8", newline="\r\n" if sys.platform == "win32" else "\n") as f:
+            f.write(contenido_remoto)
+
+        if sys.platform == "win32":
+            os.execvp("powershell.exe", [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", ruta_script
+            ])
+        elif "com.termux" in os.environ.get("PREFIX", ""):
+            os.chmod(ruta_script, 0o755)
+            os.execvp("/data/data/com.termux/files/usr/bin/bash", ["/data/data/com.termux/files/usr/bin/bash", ruta_script])
+        else:
+            os.chmod(ruta_script, 0o755)
+            os.execvp("bash", ["bash", ruta_script])
+    except Exception as e:
+        console.print(f"[bold red]Error al ejecutar el actualizador:[/bold red] {e}\n")
 
 def generar_frame_onda(tick):
     """Genera la onda sinusoidal Braille en una sola línea (3 celdas = 4x6 puntos)."""
@@ -224,6 +321,74 @@ def render_onda_animada(tick, mensaje_estado):
     t.append(f"{onda} ", style="bold #10b981")
     t.append(mensaje_estado, style="bold cyan")
     return t
+
+def instalar_modelo_ollama(nombre_modelo, session):
+    """Descarga e instala un modelo en Ollama mostrando progreso en vivo con la onda Braille."""
+    nombre_modelo = nombre_modelo.strip()
+    if not nombre_modelo:
+        console.print("[yellow]Especifica el modelo a instalar. Ejemplo: [bold]/instalar qwen2.5-coder:3b[/bold][/yellow]\n")
+        return None
+
+    console.print(f"[cyan]⬇️ Solicitando descarga de [bold white]{nombre_modelo}[/bold white] en Ollama...[/cyan]")
+
+    estado_pull = {
+        "status": "Conectando con registro de Ollama...",
+        "porcentaje": "",
+        "finalizado": False,
+        "error": None
+    }
+
+    def _pull_worker():
+        try:
+            with requests.post(OLLAMA_PULL_URL, json={"name": nombre_modelo, "stream": True}, stream=True, timeout=600) as r:
+                if r.status_code != 200:
+                    estado_pull["error"] = f"HTTP {r.status_code}: {r.text}"
+                    return
+                for linea in r.iter_lines():
+                    if linea:
+                        datos = json.loads(linea.decode("utf-8"))
+                        if "error" in datos:
+                            estado_pull["error"] = datos["error"]
+                            return
+                        st = datos.get("status", "")
+                        total = datos.get("total", 0)
+                        completed = datos.get("completed", 0)
+                        if total > 0:
+                            pct = (completed / total) * 100
+                            mb_done = completed / (1024 ** 2)
+                            mb_tot = total / (1024 ** 2)
+                            estado_pull["porcentaje"] = f" ({pct:.1f}% - {mb_done:.0f}/{mb_tot:.0f} MB)"
+                        else:
+                            estado_pull["porcentaje"] = ""
+                        if st:
+                            estado_pull["status"] = st
+        except Exception as exc:
+            estado_pull["error"] = str(exc)
+        finally:
+            estado_pull["finalizado"] = True
+
+    hilo = threading.Thread(target=_pull_worker, daemon=True)
+    hilo.start()
+
+    tick = 0
+    with Live(render_onda_animada(0, estado_pull["status"]), console=console, refresh_per_second=16) as live:
+        while not estado_pull["finalizado"]:
+            msg = f"{estado_pull['status']}{estado_pull['porcentaje']}"
+            live.update(render_onda_animada(tick, msg))
+            tick += 1
+            time.sleep(0.06)
+        live.update(Text(""))
+
+    if estado_pull["error"]:
+        console.print(f"[bold red]✖ Error al instalar '{nombre_modelo}':[/bold red] {estado_pull['error']}\n")
+        return None
+
+    console.print(f"[green]✔ Modelo [bold]{nombre_modelo}[/bold] instalado correctamente en Ollama.[/green]")
+    resp = session.prompt([('class:prompt', f'¿Deseas activar {nombre_modelo} ahora mismo? [S/n]: ')]).strip().lower()
+    if resp in ["", "s", "si", "sí", "y", "yes"]:
+        return nombre_modelo
+    console.print()
+    return None
 
 def cargar_memoria_largo_plazo():
     if not os.path.isfile(MEMORY_FILE):
@@ -420,6 +585,12 @@ class ConejoCompleter(Completer):
                 if nombre.lower().startswith(prefijo):
                     tamano_gb = m.get("size", 0) / (1024 ** 3)
                     yield Completion(nombre, start_position=-len(prefijo), display_meta=f"{tamano_gb:.2f} GB")
+            return
+        if texto.lower().startswith("/instalar "):
+            prefijo = texto.split(" ", 1)[1].lower()
+            for nombre, desc in MODELOS_SUGERIDOS.items():
+                if nombre.lower().startswith(prefijo):
+                    yield Completion(nombre, start_position=-len(prefijo), display_meta=desc)
 
 def mostrar_banner(modelo_actual, temperatura, modo_agente, auto_ejecutar):
     estado_agente = "[bold green]ON[/bold green]" if modo_agente else "[dim]OFF[/dim]"
@@ -427,12 +598,12 @@ def mostrar_banner(modelo_actual, temperatura, modo_agente, auto_ejecutar):
     num_hechos = len(cargar_memoria_largo_plazo())
 
     banner_text = Text.from_markup(
-        f"[bold bright_white]{ASCII_ART}[/bold bright_white]\n\n"
+        f"[bold bright_white]{ASCII_ART}[/bold bright_white]  [dim]v{VERSION}[/dim]\n\n"
         f"[bold cyan]Modelo:[/bold cyan] {modelo_actual} | [bold cyan]Temp:[/bold cyan] {temperatura} | "
         f"[bold cyan]Agente:[/bold cyan] {estado_agente} ({estado_auto}) | [bold cyan]Memoria:[/bold cyan] {num_hechos} hechos\n"
         f"[dim]Comandos (Tab):[/dim] [bold yellow]/agente[/bold yellow] | [bold yellow]/auto[/bold yellow] | "
-        f"[bold yellow]/memoria[/bold yellow] | [bold yellow]/recordar[/bold yellow] | [bold yellow]/modelos[/bold yellow] | "
-        f"[bold yellow]/modelo[/bold yellow] | [bold yellow]/archivo[/bold yellow] | [bold yellow]/guardar[/bold yellow] | [bold yellow]/salir[/bold yellow]"
+        f"[bold yellow]/instalar[/bold yellow] | [bold yellow]/modelos[/bold yellow] | [bold yellow]/modelo[/bold yellow] | "
+        f"[bold yellow]/actualizar[/bold yellow] | [bold yellow]/memoria[/bold yellow] | [bold yellow]/guardar[/bold yellow] | [bold yellow]/salir[/bold yellow]"
     )
     console.print(Panel(banner_text, border_style="cyan", expand=False))
     console.print()
@@ -441,7 +612,9 @@ def mostrar_config(modelo_actual, temperatura, system_prompt):
     tabla = Table(title=f"Configuración Activa ({CONFIG_FILE})", border_style="cyan")
     tabla.add_column("Parámetro", style="bold yellow")
     tabla.add_column("Valor Actual", style="white")
+    tabla.add_row("Versión CLI", f"v{VERSION}")
     tabla.add_row("Sistema detectado", detectar_so())
+    tabla.add_row("Instalador asignado", obtener_script_instalador_so())
     tabla.add_row("Modelo activo", modelo_actual)
     tabla.add_row("Temperatura", str(temperatura))
     tabla.add_row("Hechos en memoria", str(len(cargar_memoria_largo_plazo())))
@@ -477,7 +650,7 @@ def listar_modelos(modelo_actual):
         tabla.add_row(activo, nombre, f"{tamano_gb:.2f} GB", info_extra)
     console.print()
     console.print(tabla)
-    console.print()
+    console.print("[dim]Usa [bold yellow]/instalar <modelo>[/bold yellow] para descargar uno nuevo o [bold yellow]/modelo <nombre>[/bold yellow] para cambiar.[/dim]\n")
 
 def validar_modelo(nombre_modelo):
     nombres = [m.get("name", "") for m in obtener_modelos_locales()]
@@ -525,6 +698,7 @@ def exportar_markdown(mensajes, modelo_actual, temperatura, nombre_archivo=None)
         console.print(f"[bold red]Error al guardar el archivo:[/bold red] {e}\n")
 
 def ejecutar_comando_sistema(comando):
+    """Ejecuta un comando en terminal y devuelve (codigo_salida, resumen_texto)."""
     console.print(Panel(f"[bold yellow]$ {comando}[/bold yellow]", title="⚡ Ejecutando en terminal", border_style="yellow", expand=False))
 
     resultado_box = {}
@@ -565,7 +739,7 @@ def ejecutar_comando_sistema(comando):
         else:
             msg = f"Error al ejecutar el comando: {err}"
         console.print(f"[bold red]{msg}[/bold red]\n")
-        return msg
+        return -1, msg
 
     resultado = resultado_box["res"]
     salida = ""
@@ -582,7 +756,7 @@ def ejecutar_comando_sistema(comando):
     resumen = f"Código de salida: {resultado.returncode}\n{salida}"
     console.print(Panel(resumen.strip(), title="📋 Resultado del comando", border_style="dim", expand=False))
     console.print()
-    return resumen
+    return resultado.returncode, resumen
 
 def consultar_modelo(mensajes, modelo, temperatura):
     payload = {
@@ -629,17 +803,20 @@ def consultar_modelo(mensajes, modelo, temperatura):
             vista_limpia = re.sub(r"<RECORDAR>.*?(?:</RECORDAR>|$)", "", texto_actual, flags=re.DOTALL | re.IGNORECASE).strip()
             if not estado_stream["primer_token"]:
                 live.update(render_onda_animada(tick, f"Procesando con {modelo}..."))
+            elif "<PLAN>" in texto_actual and "</PLAN>" not in texto_actual:
+                live.update(render_onda_animada(tick, "Elaborando plan de acción..."))
             elif "<EJECUTAR>" in texto_actual:
                 live.update(render_onda_animada(tick, "Preparando comando de terminal..."))
             else:
-                live.update(Markdown(vista_limpia + " ▌"))
+                vista_sin_tags = re.sub(r"<PLAN>.*?</PLAN>", "", vista_limpia, flags=re.DOTALL | re.IGNORECASE).strip()
+                live.update(Markdown(vista_sin_tags + " ▌"))
             tick += 1
             time.sleep(0.06)
 
         if estado_stream["not_found"]:
             live.update(Text(""))
             console.print(f"[bold red]Error:[/bold red] El modelo '[yellow]{modelo}[/yellow]' no está instalado.")
-            console.print(f"Descárgalo ejecutando: [cyan]ollama pull {modelo}[/cyan]\n")
+            console.print(f"Instálalo con: [cyan]/instalar {modelo}[/cyan]\n")
             return None
 
         if estado_stream["error"] is not None:
@@ -648,12 +825,23 @@ def consultar_modelo(mensajes, modelo, temperatura):
 
         respuesta_final = estado_stream["texto"]
         vista_final_limpia = re.sub(r"<RECORDAR>.*?</RECORDAR>", "", respuesta_final, flags=re.DOTALL | re.IGNORECASE).strip()
-        if "<EJECUTAR>" in respuesta_final:
+        if "<EJECUTAR>" in respuesta_final or "<PLAN>" in respuesta_final:
             live.update(Text(""))
         else:
             live.update(Markdown(vista_final_limpia))
 
     return estado_stream["texto"]
+
+def normalizar_comando(cmd):
+    return re.sub(r"\s+", " ", cmd.strip())
+
+def extraer_plan_accion(respuesta):
+    match = re.search(r"<PLAN>(.*?)(?:</PLAN>|<EJECUTAR>|$)", respuesta, re.DOTALL | re.IGNORECASE)
+    if match:
+        plan = match.group(1).strip()
+        if plan:
+            return plan
+    return None
 
 def extraer_comando_agente(respuesta):
     match = re.search(r"<EJECUTAR>(.*?)(?:</EJECUTAR>|$)", respuesta, re.DOTALL | re.IGNORECASE)
@@ -674,15 +862,31 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
     iteracion = 0
     temp_efectiva = min(temperatura_actual, 0.15) if modo_agente else temperatura_actual
 
+    historial_comandos = {}
+    ultimo_error_firma = None
+    fallos_consecutivos = 0
+    plan_mostrado = False
+
     while iteracion < max_iteraciones:
         iteracion += 1
 
         mensajes_envio = list(mensajes)
         if modo_agente:
-            mensajes_envio.append({
-                "role": "system",
-                "content": "RECORDATORIO: No des instrucciones al usuario. Si falta ejecutar algo para cumplir la orden, responde ÚNICAMENTE con <EJECUTAR>comando</EJECUTAR>."
-            })
+            prohibidos = ""
+            if historial_comandos:
+                lista_prev = ", ".join(f"`{c}`" for c in historial_comandos.keys())
+                prohibidos = f" Comandos YA ejecutados en este turno (PROHIBIDO repetirlos): {lista_prev}."
+            if iteracion == 1:
+                instruccion_turno = (
+                    "RECORDATORIO DE PLAN Y ACCIÓN: Primero escribe el listado numerado de pasos dentro de <PLAN>...</PLAN> "
+                    "y en seguida el primer comando dentro de <EJECUTAR>comando</EJECUTAR>."
+                )
+            else:
+                instruccion_turno = (
+                    "RECORDATORIO: Continúa ejecutando el siguiente paso pendiente del plan con <EJECUTAR>comando</EJECUTAR>. "
+                    f"No repitas <PLAN>.{prohibidos}"
+                )
+            mensajes_envio.append({"role": "system", "content": instruccion_turno})
 
         respuesta = consultar_modelo(mensajes_envio, modelo_actual, temp_efectiva)
         if respuesta is None:
@@ -696,6 +900,20 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
                 mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
 
         respuesta_limpia = re.sub(r"<RECORDAR>.*?</RECORDAR>", "", respuesta, flags=re.DOTALL | re.IGNORECASE).strip()
+
+        # Mostrar el Plan de Acción en pantalla antes de iniciar los comandos
+        if modo_agente and not plan_mostrado:
+            plan_texto = extraer_plan_accion(respuesta_limpia)
+            if plan_texto:
+                console.print(Panel(
+                    Markdown(plan_texto),
+                    title="📋 Plan de Acción del Agente",
+                    border_style="cyan",
+                    expand=False
+                ))
+                console.print()
+                plan_mostrado = True
+
         mensajes.append({"role": "assistant", "content": respuesta_limpia})
         registrar_turno_sesion("assistant", respuesta_limpia, modelo_actual)
 
@@ -705,31 +923,94 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
 
         comando = extraer_comando_agente(respuesta_limpia)
         if not comando:
+            # Si mostró el plan pero olvidó emitir <EJECUTAR> en el primer paso, forzar la ejecución del paso 1
+            if plan_mostrado and iteracion == 1:
+                mensajes.append({
+                    "role": "user",
+                    "content": "Excelente plan. Ahora ejecuta el Paso 1 respondiendo ÚNICAMENTE con <EJECUTAR>comando</EJECUTAR>."
+                })
+                continue
             console.print()
             return
 
+        cmd_norm = normalizar_comando(comando)
+        veces_ejecutado = historial_comandos.get(cmd_norm, 0)
+
+        if veces_ejecutado >= 1:
+            console.print(f"[bold yellow]🛡️ Protección anti-bucle:[/bold yellow] El agente intentó repetir `[white]{comando}[/white]`.")
+            if veces_ejecutado >= 2:
+                console.print("[bold red]🛑 Bucle detectado:[/bold red] Deteniendo ejecución autónoma para evitar ciclos infinitos.\n")
+                mensajes.append({
+                    "role": "user",
+                    "content": (
+                        f"SISTEMA: Ejecución detenida porque intentaste repetir `{comando}` múltiples veces. "
+                        "Explica al usuario qué lograste hasta ahora y qué problema impidió continuar."
+                    )
+                })
+                resp_cierre = consultar_modelo(mensajes, modelo_actual, temp_efectiva)
+                if resp_cierre:
+                    mensajes.append({"role": "assistant", "content": resp_cierre})
+                console.print()
+                return
+
+            historial_comandos[cmd_norm] = veces_ejecutado + 1
+            mensajes.append({
+                "role": "user",
+                "content": (
+                    f"ADVERTENCIA ANTI-BUCLE: El comando `{comando}` YA fue ejecutado anteriormente y ya tienes su resultado arriba. "
+                    "ESTÁ PROHIBIDO volver a ejecutarlo. Usa un comando DIFERENTE para avanzar o entrega la respuesta final en texto."
+                )
+            })
+            continue
+
         autorizado = auto_ejecutar
         if not auto_ejecutar:
-            console.print(f"\n[bold yellow]⚠ El agente solicita ejecutar:[/bold yellow] [bold white]{comando}[/bold white]")
+            console.print(f"[bold yellow]⚠ El agente solicita ejecutar:[/bold yellow] [bold white]{comando}[/bold white]")
             resp_usuario = session.prompt([('class:prompt', '¿Autorizar ejecución? [s/N]: ')]).strip().lower()
             autorizado = resp_usuario in ['s', 'si', 'sí', 'y', 'yes']
 
         if autorizado:
-            salida_comando = ejecutar_comando_sistema(comando)
+            historial_comandos[cmd_norm] = 1
+            codigo_salida, salida_comando = ejecutar_comando_sistema(comando)
+
+            if codigo_salida != 0:
+                fallos_consecutivos += 1
+                firma_actual = f"{codigo_salida}:{salida_comando[:200]}"
+                if firma_actual == ultimo_error_firma or fallos_consecutivos >= 3:
+                    console.print("[bold red]🛑 Protección anti-bucle:[/bold red] Múltiples fallos consecutivos sin progreso. Deteniendo ciclo.\n")
+                    mensajes.append({
+                        "role": "user",
+                        "content": (
+                            f"SALIDA DEL SISTEMA tras ejecutar `{comando}`:\n{salida_comando}\n\n"
+                            "SISTEMA: Se detuvo la ejecución automática tras 3 errores consecutivos. "
+                            "Resume claramente el error ocurrido y sugiere la solución al usuario sin emitir más etiquetas <EJECUTAR>."
+                        )
+                    })
+                    resp_final = consultar_modelo(mensajes, modelo_actual, temp_efectiva)
+                    if resp_final:
+                        mensajes.append({"role": "assistant", "content": resp_final})
+                    console.print()
+                    return
+                ultimo_error_firma = firma_actual
+            else:
+                fallos_consecutivos = 0
+                ultimo_error_firma = None
+
             mensajes.append({
                 "role": "user",
                 "content": (
                     f"SALIDA DEL SISTEMA tras ejecutar `{comando}`:\n{salida_comando}\n\n"
-                    "Si hubo un error, corrígelo ejecutando otro comando con <EJECUTAR>...</EJECUTAR>. "
-                    "Si falta el siguiente paso (ej. probar o verificar), emite <EJECUTAR>...</EJECUTAR>. "
-                    "Si ya terminó todo con éxito, informa el resultado final."
+                    "Analiza este resultado respecto al plan. Si hubo un error, corrígelo con un comando NUEVO. "
+                    "Si falta el siguiente paso del plan, emite <EJECUTAR>nuevo_comando</EJECUTAR>. "
+                    "Si todos los pasos del plan ya terminaron con éxito, entrega el resumen final en texto normal."
                 )
             })
         else:
             console.print("[dim]✖ Ejecución rechazada por el usuario.[/dim]\n")
+            historial_comandos[cmd_norm] = 2
             mensajes.append({
                 "role": "user",
-                "content": f"Comando `{comando}` rechazado por el usuario. Propón otro comando con <EJECUTAR> o detente."
+                "content": f"Comando `{comando}` rechazado por el usuario. No vuelvas a pedirlo; busca una alternativa o detente."
             })
 
     console.print("[yellow]⚠ Se alcanzó el límite máximo de 8 pasos autónomos por turno.[/yellow]\n")
@@ -746,7 +1027,17 @@ def main():
     parser.add_argument("-l", "--list-models", action="store_true", help="Lista modelos locales.")
     parser.add_argument("-f", "--file", action="append", help="Archivos de contexto.")
     parser.add_argument("--no-history", action="store_true", help="Inicia sin cargar el contexto reciente de sesiones previas.")
+    parser.add_argument("--update", action="store_true", help="Verifica en GitHub si hay una nueva versión y actualiza.")
+    parser.add_argument("-v", "--version", action="store_true", help="Muestra la versión instalada.")
     args = parser.parse_args()
+
+    if args.version:
+        console.print(f"Conejo Blanco CLI v{VERSION} ({detectar_so()})")
+        return
+
+    if args.update:
+        verificar_y_actualizar(forzar=False)
+        return
 
     asegurar_ollama_activo()
 
@@ -815,6 +1106,18 @@ def main():
             if entrada.lower() in ['/salir', 'exit', 'quit']:
                 console.print("[dim]Desconectando de la Matrix...[/dim]")
                 break
+            if entrada.lower() == '/actualizar' or entrada.lower().startswith('/actualizar '):
+                forzar_act = "--forzar" in entrada.lower() or "-f" in entrada.lower()
+                verificar_y_actualizar(forzar=forzar_act)
+                continue
+            if entrada.lower() == '/instalar' or entrada.lower().startswith('/instalar '):
+                modelo_a_instalar = entrada[9:].strip() if len(entrada) > 9 else ""
+                instalado = instalar_modelo_ollama(modelo_a_instalar, session)
+                if instalado:
+                    modelo_actual = instalado
+                    mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
+                    console.print(f"[green]✔ Modelo activo cambiado a [bold]{modelo_actual}[/bold].[/green]\n")
+                continue
             if entrada.lower() == '/agente':
                 modo_agente = not modo_agente
                 mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
@@ -879,7 +1182,8 @@ def main():
                     mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
                     console.print(f"[green]✔ Modelo cambiado a [bold]{modelo_actual}[/bold] (memoria y contexto conservados).[/green]\n")
                 else:
-                    console.print(f"[red]✖ El modelo '{nuevo_modelo}' no está instalado.[/red]\n")
+                    console.print(f"[red]✖ El modelo '{nuevo_modelo}' no está instalado.[/red]")
+                    console.print(f"[dim]Descárgalo ahora con: [bold yellow]/instalar {nuevo_modelo}[/bold yellow][/dim]\n")
                 continue
             if entrada.lower().startswith('/archivo '):
                 ruta = os.path.expanduser(entrada[9:].strip())
