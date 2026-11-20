@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -e
-CONEJO_VERSION="1.9.1"
+CONEJO_VERSION="2.0.0"
 
 VERDE='\033[0;32m'
 CIAN='\033[0;36m'
@@ -113,6 +113,7 @@ import re
 import math
 import json
 import time
+import signal
 import shutil
 import tempfile
 import threading
@@ -135,7 +136,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-VERSION = "1.9.1"
+VERSION = "2.0.0"
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/TrakerDev/conejo_blanco/main"
 
 OLLAMA_BASE = "http://localhost:11434"
@@ -148,7 +149,11 @@ HISTORY_FILE = os.path.join(APP_DIR, "historial_prompts")
 CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 MEMORY_FILE = os.path.join(APP_DIR, "memoria_usuario.json")
 SESSION_LOG_FILE = os.path.join(APP_DIR, "historial_sesiones.jsonl")
+TERMINAL_LOG_FILE = os.path.join(APP_DIR, "historial_terminal.jsonl")
+TASK_MEMORY_FILE = os.path.join(APP_DIR, "memoria_tareas.json")
 OLLAMA_LOG = os.path.join(APP_DIR, "ollama_serve.log")
+
+TIMEOUT_MAXIMO_SEGUNDOS = 300  # 5 minutos máximo (countdown 05:00 -> 00:00)
 
 DEFAULT_CONFIG = {
     "default_model": "gemma2:2b",
@@ -167,31 +172,253 @@ MODELOS_SUGERIDOS = {
     "mistral": "Mistral (7B) - Modelo general robusto ~4.1 GB"
 }
 
+REGLAS_PELIGRO = [
+    (r"\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|--recursive\s+--force)\b",
+     "Eliminación recursiva forzada de archivos o directorios sin posibilidad de recuperación."),
+    (r"\brm\s+.*(/|\*|~|\$HOME|%USERPROFILE%)\b",
+     "Borrado con comodines o sobre rutas críticas del sistema/usuario."),
+    (r"\b(rmdir|del\s+/[sq]|rd\s+/[sq]|Remove-Item\s+.*-Recurse)\b",
+     "Eliminación masiva de carpetas y subdirectorios."),
+    (r"\b(mkfs|fdisk|parted|gdisk|diskpart|format\s+[a-zA-Z]:)\b",
+     "Formateo o modificación de tabla de particiones de disco (pérdida total de datos)."),
+    (r"\bdd\s+.*of=/dev/",
+     "Escritura directa a nivel de bloque sobre un dispositivo físico o partición."),
+    (r"\bchmod\s+(-R\s+)?(777|000)\b|\bchown\s+-R\s+root\b",
+     "Alteración crítica de permisos o propiedad de archivos que puede comprometer la seguridad o el arranque."),
+    (r"\b(shutdown|reboot|halt|poweroff|init\s+[06]|Stop-Computer|Restart-Computer)\b",
+     "Apagado o reinicio inmediato del sistema operativo, interrumpiendo procesos activos."),
+    (r"\b(kill\s+-9\s+-1|killall|pkill\s+-9|taskkill\s+/f)\b",
+     "Terminación forzada de procesos del sistema sin guardado previo."),
+    (r"\b(DROP\s+DATABASE|DROP\s+TABLE|TRUNCATE\s+TABLE|DELETE\s+FROM\s+\w+\s*;)\b",
+     "Destrucción irreversible de bases de datos, tablas o registros completos."),
+    (r"\b(iptables\s+-F|ufw\s+disable|systemctl\s+(stop|disable)\s+(ssh|sshd|networking|NetworkManager))\b",
+     "Desactivación del firewall o corte de conectividad de red/SSH del equipo."),
+    (r"(curl|wget)\s+.*\|\s*(sudo\s+)?(ba)?sh\b",
+     "Descarga y ejecución remota directa de scripts sin revisión previa de su contenido."),
+    (r">\s*/etc/(passwd|shadow|sudoers|fstab|hosts)",
+     "Sobrescritura directa de archivos críticos de configuración o autenticación del sistema.")
+]
+
 INSTRUCCIONES_AGENTE = """
-ERES UN AGENTE EJECUTOR DE TERMINAL CON ACCESO TOTAL AL SISTEMA ({os_name} en {cwd}).
-NUNCA digas "no tengo acceso", "no puedo descargar" ni le des instrucciones al usuario para que las haga él. TÚ TIENES ACCESO DIRECTO A LA TERMINAL MEDIANTE LA ETIQUETA <EJECUTAR>.
+ERES UN AGENTE INTELIGENTE HÍBRIDO:
+ASISTENTE CONVERSACIONAL + EJECUTOR DE TERMINAL.
 
-PROTOCOLO OBLIGATORIO EN CADA TAREA:
-1. En el PRIMER paso de una solicitud del usuario, define un plan de acción breve y claro en lista numerada dentro de <PLAN>...</PLAN>, seguido inmediatamente del PRIMER comando a ejecutar dentro de <EJECUTAR>...</EJECUTAR>.
-2. En los pasos siguientes tras recibir la salida del sistema, NO repitas <PLAN>; responde ÚNICAMENTE con <EJECUTAR>siguiente_comando</EJECUTAR> hasta completar la tarea.
-3. Cuando todos los pasos del plan estén verificados y terminados, responde al usuario en español normal sin etiquetas.
+INFORMACIÓN DEL SISTEMA:
+- Sistema operativo: {os_name}
+- Directorio actual: {cwd}
+- Tienes acceso a la terminal mediante la etiqueta <EJECUTAR>.
 
-EJEMPLOS OBLIGATORIOS DE COMPORTAMIENTO:
-Usuario: instala gTTS desde github y haz una prueba de audio
-Asistente: <PLAN>
-1. Instalar la librería gTTS directamente desde su repositorio oficial de GitHub.
-2. Verificar la instalación comprobando la versión de gtts-cli.
-3. Generar un archivo de audio de prueba en español para validar el funcionamiento.
+==================================================
+1. IDENTIFICACIÓN DE LA INTENCIÓN DEL USUARIO
+==================================================
+
+Antes de responder, identifica qué tipo de solicitud recibiste:
+
+A) CONVERSACIONAL:
+Cuando el usuario quiera conversar, hacer preguntas,
+recibir explicaciones, opiniones, ideas o conocimientos
+que no requieran interactuar con el sistema.
+
+En este caso:
+- Responde directamente en español natural.
+- No generes PLAN.
+- No utilices EJECUTAR.
+- No inventes comandos.
+- Mantén una conversación natural y fluida.
+
+Ejemplos:
+Usuario: Hola, ¿cómo estás?
+Usuario: Explícame qué es Python.
+Usuario: ¿Qué opinas de esta idea?
+Usuario: ¿Cómo funciona Docker?
+
+B) EJECUCIÓN:
+Cuando el usuario solicite instalar, descargar, crear,
+modificar, eliminar, ejecutar, configurar, analizar
+archivos o realizar acciones en el sistema.
+
+En este caso:
+- Utiliza la terminal.
+- Informa al usuario de lo que vas a realizar.
+- Genera un plan breve.
+- Ejecuta los comandos necesarios.
+- Verifica los resultados.
+
+C) MIXTA:
+Cuando una solicitud combine conversación y ejecución.
+
+En este caso:
+- Explica brevemente lo necesario.
+- Ejecuta las acciones solicitadas.
+- Informa de los resultados.
+
+IMPORTANTE:
+No ejecutes comandos simplemente porque puedan ser útiles.
+Ejecuta únicamente cuando la intención del usuario
+requiera realmente una acción sobre el sistema.
+
+==================================================
+2. PROTOCOLO DE EJECUCIÓN
+==================================================
+
+Cuando una tarea requiera utilizar la terminal:
+
+PRIMER TURNO:
+
+1. Genera un plan breve dentro de <PLAN>.
+2. Explica brevemente qué vas a hacer.
+3. Ejecuta el primer comando dentro de <EJECUTAR>.
+
+Formato:
+
+<PLAN>
+1. Descripción del primer paso.
+2. Descripción del segundo paso.
+3. Verificación del resultado.
 </PLAN>
-<EJECUTAR>pip install git+https://github.com/pndurette/gTTS.git</EJECUTAR>
 
-Usuario: [SALIDA DEL SISTEMA: Successfully installed gTTS-2.5.4]
-Asistente: <EJECUTAR>gtts-cli --version</EJECUTAR>
+Voy a comenzar realizando la primera operación.
 
-REGLAS ESTRICTAS:
-- Emite UN solo comando por turno dentro de <EJECUTAR>...</EJECUTAR>.
-- NUNCA repitas un comando que ya ejecutaste en este turno. Si falló, cambia de estrategia o corrige los parámetros.
-- No agregues explicaciones fuera de <PLAN> mientras ejecutas comandos.
+<EJECUTAR>comando aquí</EJECUTAR>
+
+TURNOS SIGUIENTES:
+
+Cuando recibas la salida de la terminal:
+
+- Analiza el resultado.
+- Determina si el comando funcionó.
+- Si necesitas continuar, ejecuta el siguiente comando.
+- No repitas el PLAN.
+- No repitas comandos exitosos.
+- Utiliza un único comando por turno.
+
+Formato:
+
+<EJECUTAR>siguiente_comando</EJECUTAR>
+
+FINALIZACIÓN:
+
+Cuando hayas terminado:
+
+- Verifica que la tarea se haya completado.
+- Resume qué hiciste.
+- Informa de los archivos creados o modificados.
+- Comunica cualquier error o limitación.
+- No afirmes que algo funcionó si no lo verificaste.
+
+Responde en español natural, sin etiquetas.
+
+==================================================
+3. COMUNICACIÓN CON EL USUARIO
+==================================================
+
+Mantén informado al usuario durante las operaciones.
+
+Antes de comenzar, explica brevemente qué harás.
+
+Durante la ejecución:
+- No describas cada pequeño detalle.
+- Comunica los pasos importantes.
+- No repitas información innecesariamente.
+- No ocultes errores.
+- No afirmes que un comando terminó correctamente
+  hasta recibir y analizar su resultado.
+
+Si una tarea requiere varios comandos, informa
+brevemente de los avances cuando sea necesario.
+
+==================================================
+4. GESTIÓN INTELIGENTE DE ERRORES
+==================================================
+
+Si un comando falla:
+
+1. Analiza el mensaje de error.
+2. Identifica la posible causa.
+3. Determina si puedes solucionarlo automáticamente.
+4. Prueba una estrategia alternativa razonable.
+5. Verifica nuevamente el resultado.
+
+No repitas comandos fallidos sin modificar
+la estrategia o corregir el problema.
+
+Si no existe una solución viable:
+- Explica qué ocurrió.
+- Indica qué intentaste.
+- Comunica qué necesitas para continuar.
+
+==================================================
+5. SEGURIDAD Y CONTROL DEL SISTEMA
+==================================================
+
+Aunque tengas acceso a la terminal, debes actuar
+con precaución.
+
+Puedes ejecutar operaciones normales como:
+- Consultar directorios.
+- Leer archivos.
+- Crear archivos.
+- Instalar dependencias.
+- Ejecutar scripts.
+- Descargar recursos.
+- Analizar proyectos.
+- Modificar configuraciones solicitadas.
+
+Antes de realizar operaciones potencialmente
+destructivas o irreversibles, solicita confirmación.
+
+Ejemplos:
+- Eliminar directorios completos.
+- Borrar grandes cantidades de archivos.
+- Formatear discos.
+- Modificar particiones.
+- Cambiar permisos críticos.
+- Eliminar bases de datos.
+- Alterar configuraciones importantes del sistema.
+
+Nunca ejecutes comandos cuyo alcance no hayas
+comprendido suficientemente.
+
+No expongas contraseñas, tokens, claves privadas
+ni credenciales en tus respuestas.
+
+==================================================
+6. REGLAS DE EJECUCIÓN
+==================================================
+
+- Utiliza un solo comando por turno.
+- No inventes resultados de terminal.
+- No declares una tarea terminada sin verificarla.
+- No repitas comandos exitosos.
+- No ejecutes acciones innecesarias.
+- Respeta el directorio de trabajo actual.
+- Aprovecha los archivos y herramientas disponibles.
+- Elige comandos compatibles con {os_name}.
+- Si hay varias soluciones, prioriza la más sencilla,
+  segura y fiable.
+
+==================================================
+7. REGLA PRINCIPAL
+==================================================
+
+TU COMPORTAMIENTO DEBE SER NATURAL E INTELIGENTE.
+
+Si el usuario conversa contigo, conversa.
+
+Si el usuario pregunta algo, responde.
+
+Si el usuario necesita una acción en el sistema,
+utiliza la terminal.
+
+Si necesitas ejecutar comandos, informa de ello.
+
+Si terminas una tarea, verifica y comunica el resultado.
+
+NO conviertas todas las conversaciones en tareas
+de terminal.
+
+NO ejecutes comandos sin una razón relacionada
+con la solicitud del usuario.
 """
 
 ASCII_ART = r"""(\_/)
@@ -210,7 +437,10 @@ console = Console()
 
 COMANDOS_INTERNOS = {
     "/agente": "Activa/desactiva el modo agente ejecutor con plan de acción",
-    "/auto": "Activa/desactiva la ejecución automática sin pedir confirmación",
+    "/auto": "Activa/desactiva la ejecución automática (mantiene protección ante comandos peligrosos)",
+    "/tareas": "Muestra la memoria de tareas (archivos creados, dependencias instaladas y pasos realizados)",
+    "/historial": "Muestra el historial de comandos ejecutados en terminal con duración y estado",
+    "/procesos": "Muestra procesos ejecutándose en segundo plano y permite consultar su salida",
     "/instalar": "Descarga e instala un modelo nuevo en Ollama (ej. /instalar qwen2.5-coder:3b)",
     "/modelos": "Lista los modelos descargados localmente en Ollama",
     "/modelo": "Cambia el modelo activo e inicia un chat limpio (ej. /modelo qwen2.5-coder:3b)",
@@ -222,9 +452,12 @@ COMANDOS_INTERNOS = {
     "/config": "Muestra la configuración activa y ruta de config.json",
     "/archivo": "Carga un archivo al contexto de la sesión",
     "/guardar": "Exporta la conversación actual a Markdown (.md)",
-    "/limpiar": "Reinicia la conversación desde cero y limpia la pantalla",
+    "/limpiar": "Reinicia la conversación y memoria de tareas desde cero",
     "/salir": "Limpia la sesión actual y cierra Conejo Blanco"
 }
+
+# Registro global de procesos asíncronos enviados a segundo plano
+PROCESOS_BG = {}
 
 def detectar_so():
     if sys.platform == "win32":
@@ -250,6 +483,425 @@ def parsear_version(v_str):
     except Exception:
         return (0, 0, 0)
 
+def formatear_tiempo(segundos):
+    segundos = max(0, int(segundos))
+    mins = segundos // 60
+    segs = segundos % 60
+    return f"{mins:02d}:{segs:02d}"
+
+# ==========================================================
+# 1. MEMORIA DE TAREAS (Archivos, Dependencias y Pasos)
+# ==========================================================
+def cargar_memoria_tareas():
+    vacia = {"archivos_creados": [], "dependencias_instaladas": [], "pasos_realizados": []}
+    if not os.path.isfile(TASK_MEMORY_FILE):
+        return vacia
+    try:
+        with open(TASK_MEMORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        for k in vacia:
+            if k not in data or not isinstance(data[k], list):
+                data[k] = []
+        return data
+    except Exception:
+        return vacia
+
+def guardar_memoria_tareas(data):
+    os.makedirs(APP_DIR, exist_ok=True)
+    try:
+        with open(TASK_MEMORY_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+def limpiar_memoria_tareas():
+    try:
+        if os.path.isfile(TASK_MEMORY_FILE):
+            os.remove(TASK_MEMORY_FILE)
+    except Exception:
+        pass
+
+def analizar_y_registrar_tarea(comando, codigo_salida, salida):
+    """Extrae automáticamente archivos creados/modificados, dependencias instaladas y pasos ejecutados."""
+    if codigo_salida != 0:
+        return
+    mem = cargar_memoria_tareas()
+    ts = datetime.now().strftime("%H:%M:%S")
+    cmd_limpio = comando.strip()
+
+    # Registrar paso completado
+    paso_entry = f"[{ts}] {cmd_limpio}"
+    if paso_entry not in mem["pasos_realizados"]:
+        mem["pasos_realizados"].append(paso_entry)
+        mem["pasos_realizados"] = mem["pasos_realizados"][-30:]
+
+    # Detectar dependencias instaladas (pip, apt, npm, brew, pkg, winget, cargo, go)
+    patrones_dep = [
+        r"(?:pip3?|python3?\s+-m\s+pip)\s+install\s+([^\n;&|]+)",
+        r"(?:apt|apt-get)\s+install\s+(?:-y\s+)?([^\n;&|]+)",
+        r"npm\s+(?:install|i)\s+(?:-g\s+)?([^\n;&|]+)",
+        r"brew\s+install\s+([^\n;&|]+)",
+        r"pkg\s+install\s+(?:-y\s+)?([^\n;&|]+)",
+        r"winget\s+install\s+([^\n;&|]+)",
+    ]
+    for pat in patrones_dep:
+        for m in re.finditer(pat, cmd_limpio, re.IGNORECASE):
+            paquetes = re.sub(r"\s+--?[a-zA-Z0-9_-]+", "", m.group(1)).strip()
+            if paquetes and paquetes not in mem["dependencias_instaladas"]:
+                mem["dependencias_instaladas"].append(paquetes)
+
+    # Detectar archivos creados o modificados (cat >, tee, touch, mkdir, redirección >, -o / --output)
+    patrones_arch = [
+        r"(?:cat\s+<<[^\n]+>\s*|tee\s+(?:-a\s+)?|touch\s+|mkdir\s+(?:-p\s+)?|>\s*)([a-zA-Z0-9_./~-]+\.[a-zA-Z0-9]+|[a-zA-Z0-9_./~-]+)",
+        r"(?:-o|--output|--out)\s+([a-zA-Z0-9_./~-]+)",
+        r"git\s+clone\s+\S+(?:\s+([a-zA-Z0-9_./~-]+))?"
+    ]
+    for pat in patrones_arch:
+        for m in re.finditer(pat, cmd_limpio):
+            ruta = m.group(1)
+            if ruta and not ruta.startswith("-") and ruta not in ("/dev/null",):
+                if ruta not in mem["archivos_creados"]:
+                    mem["archivos_creados"].append(ruta)
+
+    guardar_memoria_tareas(mem)
+
+def mostrar_memoria_tareas():
+    mem = cargar_memoria_tareas()
+    if not any(mem.values()):
+        console.print("[yellow]No hay tareas, archivos ni dependencias registradas en la sesión actual.[/yellow]\n")
+        return
+
+    tabla = Table(title="🗂️ Memoria de Tareas de la Sesión Actual", border_style="cyan")
+    tabla.add_column("Categoría", style="bold yellow", width=24)
+    tabla.add_column("Elementos Registrados", style="white")
+
+    archivos = "\n".join(f"• {a}" for a in mem["archivos_creados"]) or "[dim]Ninguno[/dim]"
+    deps = "\n".join(f"• {d}" for d in mem["dependencias_instaladas"]) or "[dim]Ninguna[/dim]"
+    pasos = "\n".join(f"{i}. {p}" for i, p in enumerate(mem["pasos_realizados"][-10:], 1)) or "[dim]Ninguno[/dim]"
+
+    tabla.add_row("Archivos creados/mod.", archivos)
+    tabla.add_row("Dependencias instaladas", deps)
+    tabla.add_row("Pasos realizados", pasos)
+
+    console.print()
+    console.print(tabla)
+    console.print()
+
+# ==========================================================
+# 4. HISTORIAL DE TERMINAL (Comandos, Salidas, Errores, Duración)
+# ==========================================================
+def registrar_historial_terminal(comando, codigo_salida, salida, duracion_seg, estado="completado"):
+    os.makedirs(APP_DIR, exist_ok=True)
+    registro = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "cwd": os.getcwd(),
+        "comando": comando,
+        "codigo_salida": codigo_salida,
+        "duracion_segundos": round(duracion_seg, 2),
+        "estado": estado,
+        "salida": salida[:3000]
+    }
+    try:
+        with open(TERMINAL_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(registro, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+def mostrar_historial_terminal(limite=15):
+    if not os.path.isfile(TERMINAL_LOG_FILE):
+        console.print("[yellow]Aún no se han ejecutado comandos en la terminal.[/yellow]\n")
+        return
+    try:
+        with open(TERMINAL_LOG_FILE, "r", encoding="utf-8") as f:
+            lineas = f.readlines()[-limite:]
+    except Exception as e:
+        console.print(f"[bold red]Error al leer el historial:[/bold red] {e}\n")
+        return
+
+    if not lineas:
+        console.print("[yellow]El historial de terminal está vacío.[/yellow]\n")
+        return
+
+    tabla = Table(title=f"📜 Historial de Terminal (Últimos {len(lineas)} comandos)", border_style="cyan")
+    tabla.add_column("Hora", style="dim", width=10)
+    tabla.add_column("Comando", style="bold white")
+    tabla.add_column("Estado / Código", justify="center", width=16)
+    tabla.add_column("Duración", justify="right", style="cyan", width=10)
+    tabla.add_column("Resumen de Salida / Error", style="dim")
+
+    for linea in lineas:
+        try:
+            item = json.loads(linea)
+            hora = item.get("timestamp", "")[-8:]
+            cmd = item.get("comando", "")
+            code = item.get("codigo_salida", -1)
+            est = item.get("estado", "")
+            dur = f"{item.get('duracion_segundos', 0):.2f}s"
+            resumen = item.get("salida", "").replace("\n", " ").strip()[:65]
+            if est == "timeout":
+                badge = "[bold red]TIMEOUT (5m)[/bold red]"
+            elif est == "segundo_plano":
+                badge = "[bold yellow]BG (Activo)[/bold yellow]"
+            elif code == 0:
+                badge = "[bold green]OK (0)[/bold green]"
+            else:
+                badge = f"[bold red]ERR ({code})[/bold red]"
+            tabla.add_row(hora, cmd[:40], badge, dur, resumen)
+        except Exception:
+            continue
+
+    console.print()
+    console.print(tabla)
+    console.print(f"[dim]Registro completo guardado en: {TERMINAL_LOG_FILE}[/dim]\n")
+
+# ==========================================================
+# 5. EVALUACIÓN DE RIESGO / OPERACIONES PELIGROSAS
+# ==========================================================
+def evaluar_peligrosidad_comando(comando):
+    """Analiza si un comando representa un riesgo destructivo o crítico y devuelve la razón."""
+    for patron, motivo in REGLAS_PELIGRO:
+        if re.search(patron, comando, re.IGNORECASE):
+            return True, motivo
+    return False, None
+
+# ==========================================================
+# ANIMACIÓN ONDA BRAILLE + COUNTDOWN 5 MINUTOS + ASYNC BG
+# ==========================================================
+def generar_frame_onda(tick):
+    phase = (tick * 0.24) % (math.pi * 2)
+    dots = [[False] * 6 for _ in range(4)]
+    for x in range(6):
+        y = (0.5 - math.sin(((x + 0.5) / 6.0) * 7.2257 - phase) * 0.42) * 3.0
+        r = max(0, min(3, round(y)))
+        dots[r][x] = True
+
+    out = ""
+    for c in range(3):
+        mask = 0
+        for dy in range(4):
+            for dx in range(2):
+                if dots[dy][c * 2 + dx]:
+                    mask |= BRAILLE_MAP[dy][dx]
+        out += chr(0x2800 + mask)
+    return out
+
+def render_onda_animada(tick, mensaje_estado, extra_info=""):
+    onda = generar_frame_onda(tick)
+    t = Text()
+    t.append(f"{onda} ", style="bold #10b981")
+    t.append(mensaje_estado, style="bold cyan")
+    if extra_info:
+        t.append(f"  {extra_info}", style="bold yellow")
+    return t
+
+def terminar_arbol_procesos(proc):
+    """Finaliza de forma segura un proceso y sus subprocesos si excede el timeout."""
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            time.sleep(0.3)
+            if proc.poll() is None:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+def monitorear_proceso_bg(proc_id, proc, comando, inicio_ts):
+    """Hilo en segundo plano que sigue trabajando si el usuario desacopla un comando largo."""
+    try:
+        stdout_data, stderr_data = proc.communicate(timeout=TIMEOUT_MAXIMO_SEGUNDOS)
+        duracion = time.time() - inicio_ts
+        salida = ""
+        if stdout_data:
+            salida += f"STDOUT:\n{stdout_data}\n"
+        if stderr_data:
+            salida += f"STDERR:\n{stderr_data}\n"
+        if not salida.strip():
+            salida = "(Finalizó sin salida en pantalla)"
+        PROCESOS_BG[proc_id]["estado"] = "finalizado"
+        PROCESOS_BG[proc_id]["codigo"] = proc.returncode
+        PROCESOS_BG[proc_id]["salida"] = salida
+        PROCESOS_BG[proc_id]["duracion"] = round(duracion, 2)
+        registrar_historial_terminal(comando, proc.returncode, salida, duracion, estado="bg_completado")
+        analizar_y_registrar_tarea(comando, proc.returncode, salida)
+    except subprocess.TimeoutExpired:
+        terminar_arbol_procesos(proc)
+        duracion = time.time() - inicio_ts
+        PROCESOS_BG[proc_id]["estado"] = "timeout"
+        PROCESOS_BG[proc_id]["codigo"] = -1
+        PROCESOS_BG[proc_id]["salida"] = "Proceso terminado por exceder el límite de 5 minutos (05:00)."
+        PROCESOS_BG[proc_id]["duracion"] = round(duracion, 2)
+        registrar_historial_terminal(comando, -1, "Timeout de 5 minutos alcanzado en segundo plano.", duracion, estado="timeout")
+
+def mostrar_procesos_bg():
+    if not PROCESOS_BG:
+        console.print("[yellow]No hay procesos en segundo plano registrados en esta sesión.[/yellow]\n")
+        return
+
+    tabla = Table(title="⚙️ Procesos Asíncronos en Segundo Plano", border_style="cyan")
+    tabla.add_column("ID", justify="center", style="bold yellow")
+    tabla.add_column("PID", justify="center", style="dim")
+    tabla.add_column("Comando", style="white")
+    tabla.add_column("Estado", justify="center")
+    tabla.add_column("Tiempo / Salida", style="dim")
+
+    for pid_key, info in PROCESOS_BG.items():
+        est = info["estado"]
+        if est == "ejecutando":
+            transcurrido = int(time.time() - info["inicio"])
+            restante = max(0, TIMEOUT_MAXIMO_SEGUNDOS - transcurrido)
+            badge = "[bold green]● Trabajando[/bold green]"
+            detalle = f"Restante: {formatear_tiempo(restante)}"
+        elif est == "finalizado":
+            code = info.get("codigo", 0)
+            badge = f"[cyan]✔ Terminado ({code})[/cyan]"
+            detalle = info.get("salida", "").replace("\n", " ")[:55]
+        else:
+            badge = "[bold red]⏱ Timeout[/bold red]"
+            detalle = "Excedió 05:00"
+
+        tabla.add_row(str(pid_key), str(info["pid"]), info["comando"][:38], badge, detalle)
+
+    console.print()
+    console.print(tabla)
+    console.print()
+
+def ejecutar_comando_sistema(comando):
+    """
+    Ejecuta un comando con:
+    - Countdown de 5 minutos máximo (05:00 -> 00:00)
+    - Ejecución asíncrona no bloqueante (si tarda >12s o presionas Ctrl+C, pasa a segundo plano y sigue trabajando)
+    - Registro en historial de terminal y memoria de tareas
+    """
+    console.print(Panel(f"[bold yellow]$ {comando}[/bold yellow]", title="⚡ Ejecutando en terminal", border_style="yellow", expand=False))
+
+    inicio_ts = time.time()
+    try:
+        if sys.platform == "win32":
+            proc = subprocess.Popen(
+                comando,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace"
+            )
+        else:
+            proc = subprocess.Popen(
+                comando,
+                shell=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                preexec_fn=os.setsid
+            )
+    except Exception as exc:
+        duracion = time.time() - inicio_ts
+        msg = f"Error al iniciar el comando: {exc}"
+        console.print(f"[bold red]{msg}[/bold red]\n")
+        registrar_historial_terminal(comando, -1, msg, duracion, estado="error")
+        return -1, msg
+
+    tick = 0
+    desacoplado = False
+
+    with Live(render_onda_animada(0, "Ejecutando proceso...", "[⏳ 05:00]"), console=console, refresh_per_second=16) as live:
+        while proc.poll() is None:
+            transcurrido = time.time() - inicio_ts
+            restante = TIMEOUT_MAXIMO_SEGUNDOS - transcurrido
+
+            # 3. Control de tiempo: Timeout máximo de 5 minutos (300 segundos)
+            if restante <= 0:
+                terminar_arbol_procesos(proc)
+                live.update(Text(""))
+                duracion = time.time() - inicio_ts
+                msg = f"Error: Tiempo límite de 5 minutos (05:00) agotado. Proceso PID {proc.pid} detenido."
+                console.print(f"[bold red]⏱ {msg}[/bold red]\n")
+                registrar_historial_terminal(comando, -1, msg, duracion, estado="timeout")
+                return -1, msg
+
+            countdown_str = f"[⏳ {formatear_tiempo(restante)}]"
+            if transcurrido >= 10:
+                estado_txt = "Proceso largo en curso (Ctrl+C para enviar a 2do plano)..."
+            else:
+                estado_txt = "Ejecutando proceso en terminal..."
+
+            live.update(render_onda_animada(tick, estado_txt, countdown_str))
+            tick += 1
+
+            try:
+                time.sleep(0.06)
+            except KeyboardInterrupt:
+                # 2. Ejecución asíncrona: pasar a segundo plano sin bloquear la conversación
+                desacoplado = True
+                live.update(Text(""))
+                break
+
+        if not desacoplado:
+            live.update(Text(""))
+
+    if desacoplado:
+        proc_id = len(PROCESOS_BG) + 1
+        PROCESOS_BG[proc_id] = {
+            "pid": proc.pid,
+            "comando": comando,
+            "inicio": inicio_ts,
+            "estado": "ejecutando",
+            "codigo": None,
+            "salida": "",
+            "duracion": 0
+        }
+        hilo_bg = threading.Thread(
+            target=monitorear_proceso_bg,
+            args=(proc_id, proc, comando, inicio_ts),
+            daemon=True
+        )
+        hilo_bg.start()
+
+        duracion_parcial = time.time() - inicio_ts
+        registrar_historial_terminal(comando, 0, f"Movido a segundo plano (ID #{proc_id}, PID {proc.pid})", duracion_parcial, estado="segundo_plano")
+        msg_bg = (
+            f"Proceso largo enviado a segundo plano (Tarea #{proc_id} | PID {proc.pid}). "
+            "Sigue trabajando de forma asíncrona (límite 5 min). Usa /procesos para ver su avance."
+        )
+        console.print(Panel(f"[bold cyan]🔄 {msg_bg}[/bold cyan]", border_style="cyan", expand=False))
+        console.print()
+        return 0, msg_bg
+
+    stdout_data, stderr_data = proc.communicate()
+    duracion = time.time() - inicio_ts
+
+    salida = ""
+    if stdout_data:
+        salida += f"STDOUT:\n{stdout_data}\n"
+    if stderr_data:
+        salida += f"STDERR:\n{stderr_data}\n"
+    if not salida.strip():
+        salida = "(El comando finalizó sin salida en pantalla)"
+
+    if len(salida) > 6000:
+        salida = salida[:6000] + "\n... [SALIDA TRUNCADA POR LONGITUD] ..."
+
+    resumen = f"Código de salida: {proc.returncode} | Duración: {duracion:.2f}s\n{salida}"
+    console.print(Panel(resumen.strip(), title=f"📋 Resultado del comando ({duracion:.2f}s)", border_style="dim", expand=False))
+    console.print()
+
+    registrar_historial_terminal(comando, proc.returncode, salida, duracion, estado="completado" if proc.returncode == 0 else "error")
+    analizar_y_registrar_tarea(comando, proc.returncode, salida)
+
+    return proc.returncode, resumen
+
+# ==========================================================
+# GESTIÓN DE ACTUALIZACIONES, OLLAMA Y MEMORIA PERSISTENTE
+# ==========================================================
 def verificar_y_actualizar(forzar=False):
     script_nombre = obtener_script_instalador_so()
     url_script = f"{GITHUB_RAW_BASE}/{script_nombre}"
@@ -309,34 +961,7 @@ def verificar_y_actualizar(forzar=False):
     except Exception as e:
         console.print(f"[bold red]Error al ejecutar el actualizador:[/bold red] {e}\n")
 
-def generar_frame_onda(tick):
-    """Genera la onda sinusoidal Braille en una sola línea (3 celdas = 4x6 puntos)."""
-    phase = (tick * 0.24) % (math.pi * 2)
-    dots = [[False] * 6 for _ in range(4)]
-    for x in range(6):
-        y = (0.5 - math.sin(((x + 0.5) / 6.0) * 7.2257 - phase) * 0.42) * 3.0
-        r = max(0, min(3, round(y)))
-        dots[r][x] = True
-
-    out = ""
-    for c in range(3):
-        mask = 0
-        for dy in range(4):
-            for dx in range(2):
-                if dots[dy][c * 2 + dx]:
-                    mask |= BRAILLE_MAP[dy][dx]
-        out += chr(0x2800 + mask)
-    return out
-
-def render_onda_animada(tick, mensaje_estado):
-    onda = generar_frame_onda(tick)
-    t = Text()
-    t.append(f"{onda} ", style="bold #10b981")
-    t.append(mensaje_estado, style="bold cyan")
-    return t
-
 def instalar_modelo_ollama(nombre_modelo, session):
-    """Descarga e instala un modelo en Ollama mostrando progreso en vivo con la onda Braille."""
     nombre_modelo = nombre_modelo.strip()
     if not nombre_modelo:
         console.print("[yellow]Especifica el modelo a instalar. Ejemplo: [bold]/instalar qwen2.5-coder:3b[/bold][/yellow]\n")
@@ -431,7 +1056,6 @@ def guardar_hecho_memoria(nuevo_hecho):
     return False
 
 def limpiar_sesion_temporal():
-    """Elimina cualquier rastro de conversaciones o comandos pendientes de sesiones anteriores."""
     try:
         if os.path.isfile(SESSION_LOG_FILE):
             os.remove(SESSION_LOG_FILE)
@@ -538,13 +1162,26 @@ def construir_system_prompt(base_prompt, modo_agente):
             "Aplica siempre estas preferencias y contexto del usuario sin volver a preguntarlos."
         )
 
+    # Inyectar memoria de tareas de la sesión actual (archivos creados, dependencias instaladas, pasos)
+    tareas = cargar_memoria_tareas()
+    bloque_tareas = ""
+    if any(tareas.values()):
+        partes = []
+        if tareas["archivos_creados"]:
+            partes.append("Archivos creados/modificados en esta sesión: " + ", ".join(tareas["archivos_creados"]))
+        if tareas["dependencias_instaladas"]:
+            partes.append("Dependencias instaladas en esta sesión: " + ", ".join(tareas["dependencias_instaladas"]))
+        if tareas["pasos_realizados"]:
+            partes.append("Últimos pasos completados:\n" + "\n".join(f"  * {p}" for p in tareas["pasos_realizados"][-8:]))
+        bloque_tareas = "\n\nMEMORIA DE TAREAS DE LA SESIÓN ACTUAL:\n" + "\n".join(partes)
+
     instruccion_aprendizaje = (
         "\n\nSi el usuario menciona una preferencia permanente, herramienta, ruta o forma de trabajo "
         "(ej. 'siempre usa Fish', 'mi servidor está en /mnt/HDD', 'me dicen Traker'), "
         "incluye al final de tu respuesta la etiqueta <RECORDAR>resumen corto del dato</RECORDAR>."
     )
 
-    prompt_final = f"{base_prompt}{bloque_memoria}{instruccion_aprendizaje}"
+    prompt_final = f"{base_prompt}{bloque_memoria}{bloque_tareas}{instruccion_aprendizaje}"
 
     if modo_agente:
         extra = INSTRUCCIONES_AGENTE.format(os_name=detectar_so(), cwd=os.getcwd())
@@ -587,14 +1224,16 @@ def mostrar_banner(modelo_actual, temperatura, modo_agente, auto_ejecutar):
     estado_agente = "[bold green]ON[/bold green]" if modo_agente else "[dim]OFF[/dim]"
     estado_auto = "[bold red]AUTO[/bold red]" if auto_ejecutar else "[cyan]MANUAL[/cyan]"
     num_hechos = len(cargar_memoria_largo_plazo())
+    activos_bg = sum(1 for p in PROCESOS_BG.values() if p["estado"] == "ejecutando")
+    bg_str = f" | [bold yellow]BG:[/bold yellow] {activos_bg}" if activos_bg > 0 else ""
 
     banner_text = Text.from_markup(
         f"[bold bright_white]{ASCII_ART}[/bold bright_white]  [dim]v{VERSION}[/dim]\n\n"
         f"[bold cyan]Modelo:[/bold cyan] {modelo_actual} | [bold cyan]Temp:[/bold cyan] {temperatura} | "
-        f"[bold cyan]Agente:[/bold cyan] {estado_agente} ({estado_auto}) | [bold cyan]Memoria:[/bold cyan] {num_hechos} hechos\n"
+        f"[bold cyan]Agente:[/bold cyan] {estado_agente} ({estado_auto}) | [bold cyan]Memoria:[/bold cyan] {num_hechos}{bg_str}\n"
         f"[dim]Comandos (Tab):[/dim] [bold yellow]/agente[/bold yellow] | [bold yellow]/auto[/bold yellow] | "
-        f"[bold yellow]/instalar[/bold yellow] | [bold yellow]/modelos[/bold yellow] | [bold yellow]/modelo[/bold yellow] | "
-        f"[bold yellow]/limpiar[/bold yellow] | [bold yellow]/memoria[/bold yellow] | [bold yellow]/guardar[/bold yellow] | [bold yellow]/salir[/bold yellow]"
+        f"[bold yellow]/tareas[/bold yellow] | [bold yellow]/historial[/bold yellow] | [bold yellow]/procesos[/bold yellow] | "
+        f"[bold yellow]/instalar[/bold yellow] | [bold yellow]/limpiar[/bold yellow] | [bold yellow]/salir[/bold yellow]"
     )
     console.print(Panel(banner_text, border_style="cyan", expand=False))
     console.print()
@@ -608,6 +1247,7 @@ def mostrar_config(modelo_actual, temperatura, system_prompt):
     tabla.add_row("Instalador asignado", obtener_script_instalador_so())
     tabla.add_row("Modelo activo", modelo_actual)
     tabla.add_row("Temperatura", str(temperatura))
+    tabla.add_row("Timeout máximo", f"{TIMEOUT_MAXIMO_SEGUNDOS}s (05:00)")
     tabla.add_row("Hechos en memoria", str(len(cargar_memoria_largo_plazo())))
     tabla.add_row("System Prompt Base", system_prompt)
     console.print()
@@ -687,67 +1327,6 @@ def exportar_markdown(mensajes, modelo_actual, temperatura, nombre_archivo=None)
         console.print(f"[green]✔ Conversación exportada en:[/green] [bold cyan]{ruta_salida}[/bold cyan]\n")
     except Exception as e:
         console.print(f"[bold red]Error al guardar el archivo:[/bold red] {e}\n")
-
-def ejecutar_comando_sistema(comando):
-    """Ejecuta un comando en terminal y devuelve (codigo_salida, resumen_texto)."""
-    console.print(Panel(f"[bold yellow]$ {comando}[/bold yellow]", title="⚡ Ejecutando en terminal", border_style="yellow", expand=False))
-
-    resultado_box = {}
-    error_box = {}
-    terminado = threading.Event()
-
-    def _worker():
-        try:
-            resultado_box["res"] = subprocess.run(
-                comando,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=120,
-                encoding="utf-8",
-                errors="replace"
-            )
-        except Exception as exc:
-            error_box["err"] = exc
-        finally:
-            terminado.set()
-
-    hilo = threading.Thread(target=_worker, daemon=True)
-    hilo.start()
-
-    tick = 0
-    with Live(render_onda_animada(0, "Ejecutando proceso en terminal..."), console=console, refresh_per_second=16) as live:
-        while not terminado.is_set():
-            live.update(render_onda_animada(tick, "Ejecutando proceso en terminal..."))
-            tick += 1
-            terminado.wait(0.06)
-        live.update(Text(""))
-
-    if "err" in error_box:
-        err = error_box["err"]
-        if isinstance(err, subprocess.TimeoutExpired):
-            msg = "Error: El comando excedió el tiempo límite de 120 segundos."
-        else:
-            msg = f"Error al ejecutar el comando: {err}"
-        console.print(f"[bold red]{msg}[/bold red]\n")
-        return -1, msg
-
-    resultado = resultado_box["res"]
-    salida = ""
-    if resultado.stdout:
-        salida += f"STDOUT:\n{resultado.stdout}\n"
-    if resultado.stderr:
-        salida += f"STDERR:\n{resultado.stderr}\n"
-    if not salida.strip():
-        salida = "(El comando finalizó sin salida en pantalla)"
-
-    if len(salida) > 6000:
-        salida = salida[:6000] + "\n... [SALIDA TRUNCADA POR LONGITUD] ..."
-
-    resumen = f"Código de salida: {resultado.returncode}\n{salida}"
-    console.print(Panel(resumen.strip(), title="📋 Resultado del comando", border_style="dim", expand=False))
-    console.print()
-    return resultado.returncode, resumen
 
 def consultar_modelo(mensajes, modelo, temperatura):
     payload = {
@@ -861,7 +1440,10 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
     while iteracion < max_iteraciones:
         iteracion += 1
 
+        # Actualizar system prompt con la memoria de tareas más reciente
+        mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
         mensajes_envio = list(mensajes)
+
         if modo_agente:
             prohibidos = ""
             if historial_comandos:
@@ -869,8 +1451,9 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
                 prohibidos = f" Comandos YA ejecutados en este turno (PROHIBIDO repetirlos): {lista_prev}."
             if iteracion == 1:
                 instruccion_turno = (
-                    "RECORDATORIO DE PLAN Y ACCIÓN: Primero escribe el listado numerado de pasos dentro de <PLAN>...</PLAN> "
-                    "y en seguida el primer comando dentro de <EJECUTAR>comando</EJECUTAR>."
+                    "RECORDATORIO: Evalúa si la intención es conversacional o requiere terminal. "
+                    "Si requiere terminal, escribe el listado numerado de pasos en <PLAN>...</PLAN>, explica brevemente "
+                    "y emite el primer comando en <EJECUTAR>comando</EJECUTAR>."
                 )
             else:
                 instruccion_turno = (
@@ -901,6 +1484,11 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
                     border_style="cyan",
                     expand=False
                 ))
+                # Mostrar explicación breve si el modelo escribió texto fuera de las etiquetas
+                texto_explicativo = re.sub(r"<PLAN>.*?</PLAN>", "", respuesta_limpia, flags=re.DOTALL | re.IGNORECASE)
+                texto_explicativo = re.sub(r"<EJECUTAR>.*?(?:</EJECUTAR>|$)", "", texto_explicativo, flags=re.DOTALL | re.IGNORECASE).strip()
+                if texto_explicativo:
+                    console.print(Markdown(texto_explicativo))
                 console.print()
                 plan_mostrado = True
 
@@ -915,7 +1503,7 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
             if plan_mostrado and iteracion == 1:
                 mensajes.append({
                     "role": "user",
-                    "content": "Excelente plan. Ahora ejecuta el Paso 1 respondiendo ÚNICAMENTE con <EJECUTAR>comando</EJECUTAR>."
+                    "content": "Ahora ejecuta el Paso 1 respondiendo ÚNICAMENTE con <EJECUTAR>comando</EJECUTAR>."
                 })
                 continue
             console.print()
@@ -951,8 +1539,23 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
             })
             continue
 
+        # 5. Modo de confirmación: pedir autorización SIEMPRE si es operación peligrosa, incluso en modo /auto
+        es_peligroso, motivo_peligro = evaluar_peligrosidad_comando(comando)
         autorizado = auto_ejecutar
-        if not auto_ejecutar:
+
+        if es_peligroso:
+            console.print(Panel(
+                f"[bold red]⚠️ OPERACIÓN POTENCIALMENTE PELIGROSA DETECTADA[/bold red]\n\n"
+                f"[bold white]Comando:[/bold white] [yellow]{comando}[/yellow]\n"
+                f"[bold white]Motivo de riesgo:[/bold white] {motivo_peligro}\n"
+                f"[dim]La confirmación obligatoria está activa incluso en modo automático (/auto).[/dim]",
+                title="🚨 Alerta de Seguridad",
+                border_style="red",
+                expand=False
+            ))
+            resp_usuario = session.prompt([('class:prompt', '¿Confirmas que deseas ejecutar esta operación riesgosa? [s/N]: ')]).strip().lower()
+            autorizado = resp_usuario in ['s', 'si', 'sí', 'y', 'yes']
+        elif not auto_ejecutar:
             console.print(f"[bold yellow]⚠ El agente solicita ejecutar:[/bold yellow] [bold white]{comando}[/bold white]")
             resp_usuario = session.prompt([('class:prompt', '¿Autorizar ejecución? [s/N]: ')]).strip().lower()
             autorizado = resp_usuario in ['s', 'si', 'sí', 'y', 'yes']
@@ -996,9 +1599,10 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
         else:
             console.print("[dim]✖ Ejecución rechazada por el usuario.[/dim]\n")
             historial_comandos[cmd_norm] = 2
+            registrar_historial_terminal(comando, -2, "Rechazado por el usuario (alerta de seguridad/confirmación).", 0.0, estado="rechazado")
             mensajes.append({
                 "role": "user",
-                "content": f"Comando `{comando}` rechazado por el usuario. No vuelvas a pedirlo; busca una alternativa o detente."
+                "content": f"Comando `{comando}` rechazado por el usuario por precaución. No vuelvas a pedirlo; busca una alternativa segura o detente."
             })
 
     console.print("[yellow]⚠ Se alcanzó el límite máximo de 8 pasos autónomos por turno.[/yellow]\n")
@@ -1006,6 +1610,7 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
 def iniciar_mensajes_limpios(base_prompt, modo_agente):
     """Crea una sesión de conversación completamente nueva sin tareas ni comandos pendientes."""
     limpiar_sesion_temporal()
+    limpiar_memoria_tareas()
     return [{"role": "system", "content": construir_system_prompt(base_prompt, modo_agente)}]
 
 def main():
@@ -1016,7 +1621,7 @@ def main():
     parser.add_argument("-m", "--model", default=config["default_model"], help="Modelo local.")
     parser.add_argument("-t", "--temperature", type=float, default=float(config["temperature"]), help="Temperatura.")
     parser.add_argument("-a", "--agent", action="store_true", help="Inicia con el modo agente activado.")
-    parser.add_argument("-y", "--yes", action="store_true", help="Autoriza automáticamente los comandos del agente.")
+    parser.add_argument("-y", "--yes", action="store_true", help="Autoriza automáticamente comandos seguros del agente.")
     parser.add_argument("-l", "--list-models", action="store_true", help="Lista modelos locales.")
     parser.add_argument("-f", "--file", action="append", help="Archivos de contexto.")
     parser.add_argument("--update", action="store_true", help="Verifica en GitHub si hay una nueva versión y actualiza.")
@@ -1043,7 +1648,6 @@ def main():
         listar_modelos(modelo_actual)
         return
 
-    # Siempre iniciar un chat completamente limpio sin comandos ni hilos pendientes
     mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente)
 
     contexto_extra = []
@@ -1093,6 +1697,7 @@ def main():
                 if entrada.lower() in ['/salir', 'exit', 'quit']:
                     mensajes.clear()
                     limpiar_sesion_temporal()
+                    limpiar_memoria_tareas()
                     console.print("[dim]Sesión limpiada. Desconectando de la Matrix...[/dim]")
                     break
                 if entrada.lower() == '/actualizar' or entrada.lower().startswith('/actualizar '):
@@ -1107,6 +1712,15 @@ def main():
                         mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente)
                         console.print(f"[green]✔ Modelo activo cambiado a [bold]{modelo_actual}[/bold] (nuevo chat limpio).[/green]\n")
                     continue
+                if entrada.lower() == '/tareas':
+                    mostrar_memoria_tareas()
+                    continue
+                if entrada.lower() == '/historial':
+                    mostrar_historial_terminal()
+                    continue
+                if entrada.lower() == '/procesos':
+                    mostrar_procesos_bg()
+                    continue
                 if entrada.lower() == '/agente':
                     modo_agente = not modo_agente
                     mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
@@ -1118,7 +1732,7 @@ def main():
                     if auto_ejecutar and not modo_agente:
                         modo_agente = True
                         mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
-                    estado = "[bold red]AUTOMÁTICO (sin confirmación)[/bold red]" if auto_ejecutar else "[cyan]MANUAL (pide confirmación)[/cyan]"
+                    estado = "[bold red]AUTOMÁTICO (comandos peligrosos siguen pidiendo permiso)[/bold red]" if auto_ejecutar else "[cyan]MANUAL (pide confirmación)[/cyan]"
                     console.print(f"Ejecución de comandos: {estado}\n")
                     continue
                 if entrada.lower() == '/memoria':
@@ -1142,7 +1756,7 @@ def main():
                     mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente)
                     console.clear()
                     mostrar_banner(modelo_actual, temperatura_actual, modo_agente, auto_ejecutar)
-                    console.print("[dim]✔ Conversación reiniciada desde cero.[/dim]\n")
+                    console.print("[dim]✔ Conversación y memoria de tareas reiniciadas desde cero.[/dim]\n")
                     continue
                 if entrada.lower() == '/config':
                     mostrar_config(modelo_actual, temperatura_actual, base_prompt)
@@ -1195,6 +1809,7 @@ def main():
             except EOFError:
                 mensajes.clear()
                 limpiar_sesion_temporal()
+                limpiar_memoria_tareas()
                 break
             except Exception as e:
                 console.print(f"\n[bold red]Error:[/bold red] {e}\n")

@@ -1,4 +1,4 @@
-# 🐇 Conejo Blanco CLI & Terminal Agent (v1.9.1)
+# 🐇 Conejo Blanco CLI & Terminal Agent (v2.0.0)
 
 ```text
 (\_/)
@@ -7,24 +7,24 @@
 by Traker
 ```
 
-![Versión](https://img.shields.io/badge/Versión-v1.9.1-brightgreen.svg)
+![Versión](https://img.shields.io/badge/Versión-v2.0.0-brightgreen.svg)
 ![Plataformas](https://img.shields.io/badge/Plataformas-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20Android-blueviolet.svg)
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg?logo=python&logoColor=white)
 ![Motor](https://img.shields.io/badge/Motor-Ollama%20Local-black.svg)
 ![Modelos](https://img.shields.io/badge/Modelos-Gemma%202%20%7C%20Qwen2.5--Coder-orange.svg)
 
-**Conejo Blanco** es un cliente y **agente autónomo de línea de comandos (CLI)** 100% local para interactuar con modelos de inteligencia artificial mediante **Ollama**. Inspirado en la experiencia visual de `gemini-cli`, incluye sesiones limpias sin tareas colgadas al abrir o cerrar, planificación explícita antes de actuar (`<PLAN>`), protección anti-bucle, descarga directa de modelos desde el chat (`/instalar`), actualización automática por sistema operativo desde GitHub (`/actualizar`), memoria persistente de preferencias y onda Braille animada en una línea (`#10b981`).
+**Conejo Blanco** es un cliente y **agente autónomo de línea de comandos (CLI)** 100% local para interactuar con modelos de inteligencia artificial mediante **Ollama**. Inspirado en la experiencia visual de `gemini-cli`, incluye memoria de tareas de sesión, ejecución asíncrona no bloqueante, temporizador countdown de 5 minutos, historial de auditoría de terminal, guardián de seguridad para comandos peligrosos y auto-actualización por sistema operativo.
 
 ---
 
-## ✨ Novedades y Características Principales
+## ✨ Novedades Principales (v2.0.0)
 
-* **🧹 Sesiones Siempre Limpias (`v1.9.1`):** Cada vez que abres `conejo_blanco`, cambias de modelo (`/modelo`), limpias (`/limpiar`) o cierras (`/salir`), se inicia un chat completamente nuevo sin arrastrar comandos ni procesos pendientes de sesiones anteriores, conservando únicamente tu memoria persistente de preferencias (`memoria_usuario.json`).
-* **📋 Plan de Acción Estructurado en Modo Agente (`/agente` / `-a`):** Antes de ejecutar el primer comando de una tarea, el agente despliega un panel con la lista numerada de pasos (`📋 Plan de Acción del Agente`) y procede a ejecutarlos secuencialmente.
-* **🛡️ Protección Anti-Bucle:** Detecta si el modelo intenta repetir un comando ya ejecutado o si encadena 3 fallos consecutivos sin progreso, bloqueando el ciclo automáticamente.
-* **⬇️ Instalación Directa de Modelos (`/instalar <modelo>`):** Descarga cualquier modelo disponible en Ollama con progreso en MB y porcentaje en vivo y autocompletado con `Tab`.
-* **🔄 Auto-Actualización Inteligente (`/actualizar` o `--update`):** Consulta el repositorio `TrakerDev/conejo_blanco` en GitHub, descarga **únicamente** el instalador correspondiente a tu sistema operativo (`linux`, `mac`, `windows` o `android_termux`) y lo ejecuta conservando tu entorno y memoria.
-* **🌊 Animación de Onda Braille en Una Línea:** Onda sinusoidal compacta de 3 celdas Braille (`4x6` puntos) en color esmeralda (`#10b981`) durante descargas, inferencia y ejecución de comandos.
+* **🗂️ Memoria de Tareas de Sesión (`/tareas`):** Registra automáticamente en `~/.conejo_blanco/memoria_tareas.json` los **archivos creados/modificados**, las **dependencias instaladas** (`pip`, `apt`, `npm`, `brew`, `pkg`, `winget`) y los **pasos realizados**, inyectándolos en el contexto del agente para que nunca pierda el hilo de lo que ya construyó.
+* **🔄 Ejecución Asíncrona No Bloqueante (`/procesos`):** Si un comando tarda más de 10 segundos (compilaciones, descargas pesadas, servidores), puedes enviarlo a segundo plano con `Ctrl+C` para seguir conversando mientras la onda Braille sigue trabajando en paralelo.
+* **⏳ Control de Tiempo con Countdown de 5 Minutos:** Todos los comandos cuentan con un temporizador visible (`[⏳ 05:00]` → `[⏳ 00:00]`) que detiene el árbol de procesos automáticamente si alcanza los 5 minutos, evitando cuelgues infinitos.
+* **📜 Historial de Auditoría de Terminal (`/historial`):** Guarda en `~/.conejo_blanco/historial_terminal.jsonl` cada comando ejecutado, su salida, errores, código de retorno y duración exacta en segundos.
+* **🚨 Guardián de Seguridad en Modo Automático (`/auto`):** Incluso con `/auto` o `-y` activados, intercepta operaciones destructivas o críticas (`rm -rf`, formateo de discos, `chmod 777`, `DROP DATABASE`, `shutdown`, `curl | sh`, etc.), muestra un panel de alerta explicando **por qué es peligroso** y exige confirmación explícita `[s/N]`.
+* **🧹 Sesiones Limpias al Iniciar, Limpiar o Cerrar:** Cada inicio, `/limpiar`, `/salir` o cambio de modelo (`/modelo`) reinicia el chat y la memoria de tareas desde cero sin comandos colgados.
 
 ---
 
@@ -81,8 +81,11 @@ chmod +x instalar_conejo_blanco_android_termux.sh
 | Comando | Descripción |
 | :--- | :--- |
 | `/agente` | Enciende o apaga el **Modo Agente** (muestra un **Plan de Acción** numerado antes de ejecutar comandos). |
-| `/auto` | Alterna entre pedir confirmación `[s/N]` antes de ejecutar cada comando o ejecutar automáticamente. |
-| `/instalar <modelo>` | Descarga e instala un modelo nuevo mediante Ollama con progreso en vivo (usa `Tab` para ver sugerencias). |
+| `/auto` | Alterna ejecución automática para comandos seguros (los comandos peligrosos **siempre** piden autorización). |
+| `/tareas` | Muestra los archivos creados, dependencias instaladas y pasos realizados en la sesión. |
+| `/historial` | Muestra el registro de comandos ejecutados con su estado, duración y resumen de salida. |
+| `/procesos` | Lista los procesos enviados a segundo plano con su tiempo restante y resultado. |
+| `/instalar <modelo>` | Descarga e instala un modelo nuevo mediante Ollama con progreso en vivo (usa `Tab` para sugerencias). |
 | `/modelos` | Lista los modelos locales descargados en Ollama. |
 | `/modelo <nombre>` | Cambia el modelo activo e inicia un nuevo chat limpio conservando tu memoria persistente. |
 | `/actualizar` | Verifica en GitHub si hay una nueva versión, descarga el instalador de tu SO y actualiza (`--forzar` reinstala). |
@@ -93,7 +96,7 @@ chmod +x instalar_conejo_blanco_android_termux.sh
 | `/guardar [archivo.md]` | Exporta la conversación completa a Markdown. |
 | `/temp <0.0 - 2.0>` | Ajusta la temperatura del modelo en la sesión actual. |
 | `/config` | Muestra los parámetros activos, versión y ruta de `config.json`. |
-| `/limpiar` | Reinicia la conversación desde cero y limpia la pantalla. |
+| `/limpiar` | Reinicia la conversación y memoria de tareas desde cero. |
 | `/salir` | Limpia la sesión actual y cierra el programa. |
 
 ---
