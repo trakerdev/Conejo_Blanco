@@ -1,4 +1,4 @@
-# 🐇 Conejo Blanco CLI & Terminal Agent (v2.0.0)
+# 🐇 Conejo Blanco CLI & Terminal Agent (v2.1.0)
 
 ```text
 (\_/)
@@ -7,7 +7,7 @@
 by Traker
 ```
 
-![Versión](https://img.shields.io/badge/Versión-v2.0.0-brightgreen.svg)
+![Versión](https://img.shields.io/badge/Versión-v2.1.0-brightgreen.svg)
 ![Plataformas](https://img.shields.io/badge/Plataformas-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20Android-blueviolet.svg)
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg?logo=python&logoColor=white)
 ![Motor](https://img.shields.io/badge/Motor-Ollama%20Local-black.svg)
@@ -17,7 +17,7 @@ by Traker
 
 ---
 
-## ✨ Novedades Principales (v2.0.0)
+## ✨ Novedades Principales (v2.1.0)
 
 * **🗂️ Memoria de Tareas de Sesión (`/tareas`):** Registra automáticamente en `~/.conejo_blanco/memoria_tareas.json` los **archivos creados/modificados**, las **dependencias instaladas** (`pip`, `apt`, `npm`, `brew`, `pkg`, `winget`) y los **pasos realizados**, inyectándolos en el contexto del agente para que nunca pierda el hilo de lo que ya construyó.
 * **🔄 Ejecución Asíncrona No Bloqueante (`/procesos`):** Si un comando tarda más de 10 segundos (compilaciones, descargas pesadas, servidores), puedes enviarlo a segundo plano con `Ctrl+C` para seguir conversando mientras la onda Braille sigue trabajando en paralelo.

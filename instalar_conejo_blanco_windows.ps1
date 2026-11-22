@@ -1,6 +1,6 @@
 $ErrorActionPreference = "Stop"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-$CONEJO_VERSION = "2.0.0"
+$CONEJO_VERSION = "2.1.0"
 
 $AppDir = Join-Path $env:USERPROFILE ".conejo_blanco"
 $VenvDir = Join-Path $AppDir "venv"
@@ -117,7 +117,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-VERSION = "2.0.0"
+VERSION = "2.1.0"
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/TrakerDev/conejo_blanco/main"
 
 OLLAMA_BASE = "http://localhost:11434"
@@ -180,227 +180,16 @@ REGLAS_PELIGRO = [
      "Sobrescritura directa de archivos críticos de configuración o autenticación del sistema.")
 ]
 
-INSTRUCCIONES_AGENTE = """
-ERES UN AGENTE INTELIGENTE HÍBRIDO:
-ASISTENTE CONVERSACIONAL + EJECUTOR DE TERMINAL.
+INSTRUCCIONES_AGENTE = """Eres un agente híbrido en {os_name} (dir: {cwd}) con acceso a terminal mediante <EJECUTAR>comando</EJECUTAR>.
 
-INFORMACIÓN DEL SISTEMA:
-- Sistema operativo: {os_name}
-- Directorio actual: {cwd}
-- Tienes acceso a la terminal mediante la etiqueta <EJECUTAR>.
-
-==================================================
-1. IDENTIFICACIÓN DE LA INTENCIÓN DEL USUARIO
-==================================================
-
-Antes de responder, identifica qué tipo de solicitud recibiste:
-
-A) CONVERSACIONAL:
-Cuando el usuario quiera conversar, hacer preguntas,
-recibir explicaciones, opiniones, ideas o conocimientos
-que no requieran interactuar con el sistema.
-
-En este caso:
-- Responde directamente en español natural.
-- No generes PLAN.
-- No utilices EJECUTAR.
-- No inventes comandos.
-- Mantén una conversación natural y fluida.
-
-Ejemplos:
-Usuario: Hola, ¿cómo estás?
-Usuario: Explícame qué es Python.
-Usuario: ¿Qué opinas de esta idea?
-Usuario: ¿Cómo funciona Docker?
-
-B) EJECUCIÓN:
-Cuando el usuario solicite instalar, descargar, crear,
-modificar, eliminar, ejecutar, configurar, analizar
-archivos o realizar acciones en el sistema.
-
-En este caso:
-- Utiliza la terminal.
-- Informa al usuario de lo que vas a realizar.
-- Genera un plan breve.
-- Ejecuta los comandos necesarios.
-- Verifica los resultados.
-
-C) MIXTA:
-Cuando una solicitud combine conversación y ejecución.
-
-En este caso:
-- Explica brevemente lo necesario.
-- Ejecuta las acciones solicitadas.
-- Informa de los resultados.
-
-IMPORTANTE:
-No ejecutes comandos simplemente porque puedan ser útiles.
-Ejecuta únicamente cuando la intención del usuario
-requiera realmente una acción sobre el sistema.
-
-==================================================
-2. PROTOCOLO DE EJECUCIÓN
-==================================================
-
-Cuando una tarea requiera utilizar la terminal:
-
-PRIMER TURNO:
-
-1. Genera un plan breve dentro de <PLAN>.
-2. Explica brevemente qué vas a hacer.
-3. Ejecuta el primer comando dentro de <EJECUTAR>.
-
-Formato:
-
-<PLAN>
-1. Descripción del primer paso.
-2. Descripción del segundo paso.
-3. Verificación del resultado.
-</PLAN>
-
-Voy a comenzar realizando la primera operación.
-
-<EJECUTAR>comando aquí</EJECUTAR>
-
-TURNOS SIGUIENTES:
-
-Cuando recibas la salida de la terminal:
-
-- Analiza el resultado.
-- Determina si el comando funcionó.
-- Si necesitas continuar, ejecuta el siguiente comando.
-- No repitas el PLAN.
-- No repitas comandos exitosos.
-- Utiliza un único comando por turno.
-
-Formato:
-
-<EJECUTAR>siguiente_comando</EJECUTAR>
-
-FINALIZACIÓN:
-
-Cuando hayas terminado:
-
-- Verifica que la tarea se haya completado.
-- Resume qué hiciste.
-- Informa de los archivos creados o modificados.
-- Comunica cualquier error o limitación.
-- No afirmes que algo funcionó si no lo verificaste.
-
-Responde en español natural, sin etiquetas.
-
-==================================================
-3. COMUNICACIÓN CON EL USUARIO
-==================================================
-
-Mantén informado al usuario durante las operaciones.
-
-Antes de comenzar, explica brevemente qué harás.
-
-Durante la ejecución:
-- No describas cada pequeño detalle.
-- Comunica los pasos importantes.
-- No repitas información innecesariamente.
-- No ocultes errores.
-- No afirmes que un comando terminó correctamente
-  hasta recibir y analizar su resultado.
-
-Si una tarea requiere varios comandos, informa
-brevemente de los avances cuando sea necesario.
-
-==================================================
-4. GESTIÓN INTELIGENTE DE ERRORES
-==================================================
-
-Si un comando falla:
-
-1. Analiza el mensaje de error.
-2. Identifica la posible causa.
-3. Determina si puedes solucionarlo automáticamente.
-4. Prueba una estrategia alternativa razonable.
-5. Verifica nuevamente el resultado.
-
-No repitas comandos fallidos sin modificar
-la estrategia o corregir el problema.
-
-Si no existe una solución viable:
-- Explica qué ocurrió.
-- Indica qué intentaste.
-- Comunica qué necesitas para continuar.
-
-==================================================
-5. SEGURIDAD Y CONTROL DEL SISTEMA
-==================================================
-
-Aunque tengas acceso a la terminal, debes actuar
-con precaución.
-
-Puedes ejecutar operaciones normales como:
-- Consultar directorios.
-- Leer archivos.
-- Crear archivos.
-- Instalar dependencias.
-- Ejecutar scripts.
-- Descargar recursos.
-- Analizar proyectos.
-- Modificar configuraciones solicitadas.
-
-Antes de realizar operaciones potencialmente
-destructivas o irreversibles, solicita confirmación.
-
-Ejemplos:
-- Eliminar directorios completos.
-- Borrar grandes cantidades de archivos.
-- Formatear discos.
-- Modificar particiones.
-- Cambiar permisos críticos.
-- Eliminar bases de datos.
-- Alterar configuraciones importantes del sistema.
-
-Nunca ejecutes comandos cuyo alcance no hayas
-comprendido suficientemente.
-
-No expongas contraseñas, tokens, claves privadas
-ni credenciales en tus respuestas.
-
-==================================================
-6. REGLAS DE EJECUCIÓN
-==================================================
-
-- Utiliza un solo comando por turno.
-- No inventes resultados de terminal.
-- No declares una tarea terminada sin verificarla.
-- No repitas comandos exitosos.
-- No ejecutes acciones innecesarias.
-- Respeta el directorio de trabajo actual.
-- Aprovecha los archivos y herramientas disponibles.
-- Elige comandos compatibles con {os_name}.
-- Si hay varias soluciones, prioriza la más sencilla,
-  segura y fiable.
-
-==================================================
-7. REGLA PRINCIPAL
-==================================================
-
-TU COMPORTAMIENTO DEBE SER NATURAL E INTELIGENTE.
-
-Si el usuario conversa contigo, conversa.
-
-Si el usuario pregunta algo, responde.
-
-Si el usuario necesita una acción en el sistema,
-utiliza la terminal.
-
-Si necesitas ejecutar comandos, informa de ello.
-
-Si terminas una tarea, verifica y comunica el resultado.
-
-NO conviertas todas las conversaciones en tareas
-de terminal.
-
-NO ejecutes comandos sin una razón relacionada
-con la solicitud del usuario.
-"""
+REGLAS:
+1. Si el usuario solo conversa o pregunta teoría, responde directo en español sin usar <PLAN> ni <EJECUTAR>.
+2. Si pide una acción en el sistema (instalar, crear, revisar, ejecutar):
+   - En el primer paso, escribe un plan breve (máx. 3-4 pasos) en <PLAN>...</PLAN>, una línea explicando qué harás, y el primer comando en <EJECUTAR>comando</EJECUTAR>.
+   - En los pasos siguientes, responde SOLO con <EJECUTAR>siguiente_comando</EJECUTAR> sin repetir el plan.
+   - Al terminar y verificar, resume el resultado en español normal sin etiquetas.
+3. Usa UN solo comando por turno, compatible con {os_name}. Nunca repitas comandos ya ejecutados ni inventes salidas.
+4. Pide confirmación antes de acciones destructivas (borrar carpetas, formatear, alterar permisos críticos)."""
 
 ASCII_ART = r"""(\_/)
 (^_^)
@@ -1136,39 +925,26 @@ def construir_system_prompt(base_prompt, modo_agente):
     hechos = cargar_memoria_largo_plazo()
     bloque_memoria = ""
     if hechos:
-        lista_hechos = "\n".join(f"- {h}" for h in hechos)
-        bloque_memoria = (
-            "\n\nMEMORIA PERSISTENTE SOBRE EL USUARIO Y SU FORMA DE TRABAJO:\n"
-            f"{lista_hechos}\n"
-            "Aplica siempre estas preferencias y contexto del usuario sin volver a preguntarlos."
-        )
+        lista_hechos = "\n".join(f"- {h}" for h in hechos[-15:])
+        bloque_memoria = f"\n\nPreferencias del usuario:\n{lista_hechos}"
 
-    # Inyectar memoria de tareas de la sesión actual (archivos creados, dependencias instaladas, pasos)
     tareas = cargar_memoria_tareas()
     bloque_tareas = ""
     if any(tareas.values()):
         partes = []
         if tareas["archivos_creados"]:
-            partes.append("Archivos creados/modificados en esta sesión: " + ", ".join(tareas["archivos_creados"]))
+            partes.append("Archivos: " + ", ".join(tareas["archivos_creados"][-10:]))
         if tareas["dependencias_instaladas"]:
-            partes.append("Dependencias instaladas en esta sesión: " + ", ".join(tareas["dependencias_instaladas"]))
+            partes.append("Paquetes: " + ", ".join(tareas["dependencias_instaladas"][-10:]))
         if tareas["pasos_realizados"]:
-            partes.append("Últimos pasos completados:\n" + "\n".join(f"  * {p}" for p in tareas["pasos_realizados"][-8:]))
-        bloque_tareas = "\n\nMEMORIA DE TAREAS DE LA SESIÓN ACTUAL:\n" + "\n".join(partes)
+            partes.append("Pasos previos: " + " | ".join(tareas["pasos_realizados"][-4:]))
+        bloque_tareas = "\n\nContexto de sesión:\n" + "\n".join(partes)
 
-    instruccion_aprendizaje = (
-        "\n\nSi el usuario menciona una preferencia permanente, herramienta, ruta o forma de trabajo "
-        "(ej. 'siempre usa Fish', 'mi servidor está en /mnt/HDD', 'me dicen Traker'), "
-        "incluye al final de tu respuesta la etiqueta <RECORDAR>resumen corto del dato</RECORDAR>."
-    )
+    if not modo_agente:
+        return f"{base_prompt}{bloque_memoria}"
 
-    prompt_final = f"{base_prompt}{bloque_memoria}{bloque_tareas}{instruccion_aprendizaje}"
-
-    if modo_agente:
-        extra = INSTRUCCIONES_AGENTE.format(os_name=detectar_so(), cwd=os.getcwd())
-        prompt_final = f"{prompt_final}\n\n{extra}"
-
-    return prompt_final
+    extra = INSTRUCCIONES_AGENTE.format(os_name=detectar_so(), cwd=os.getcwd())
+    return f"{base_prompt}{bloque_memoria}{bloque_tareas}\n\n{extra}"
 
 class ConejoCompleter(Completer):
     def __init__(self):
@@ -1314,7 +1090,11 @@ def consultar_modelo(mensajes, modelo, temperatura):
         "model": modelo,
         "messages": mensajes,
         "stream": True,
-        "options": {"temperature": temperatura}
+        "keep_alive": "10m",
+        "options": {
+            "temperature": temperatura,
+            "num_ctx": 2048
+        }
     }
 
     estado_stream = {
@@ -1421,27 +1201,13 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
     while iteracion < max_iteraciones:
         iteracion += 1
 
-        # Actualizar system prompt con la memoria de tareas más reciente
-        mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
         mensajes_envio = list(mensajes)
-
-        if modo_agente:
-            prohibidos = ""
-            if historial_comandos:
-                lista_prev = ", ".join(f"`{c}`" for c in historial_comandos.keys())
-                prohibidos = f" Comandos YA ejecutados en este turno (PROHIBIDO repetirlos): {lista_prev}."
-            if iteracion == 1:
-                instruccion_turno = (
-                    "RECORDATORIO: Evalúa si la intención es conversacional o requiere terminal. "
-                    "Si requiere terminal, escribe el listado numerado de pasos en <PLAN>...</PLAN>, explica brevemente "
-                    "y emite el primer comando en <EJECUTAR>comando</EJECUTAR>."
-                )
-            else:
-                instruccion_turno = (
-                    "RECORDATORIO: Continúa ejecutando el siguiente paso pendiente del plan con <EJECUTAR>comando</EJECUTAR>. "
-                    f"No repitas <PLAN>.{prohibidos}"
-                )
-            mensajes_envio.append({"role": "system", "content": instruccion_turno})
+        if modo_agente and historial_comandos:
+            lista_prev = ", ".join(f"`{c}`" for c in historial_comandos.keys())
+            mensajes_envio.append({
+                "role": "system",
+                "content": f"No repitas comandos ya ejecutados: {lista_prev}."
+            })
 
         respuesta = consultar_modelo(mensajes_envio, modelo_actual, temp_efectiva)
         if respuesta is None:
