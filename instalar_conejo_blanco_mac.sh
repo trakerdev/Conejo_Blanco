@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -e
-CONEJO_VERSION="2.1.0"
+CONEJO_VERSION="2.2.0"
 
 VERDE='\033[0;32m'
 CIAN='\033[0;36m'
@@ -132,7 +132,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/TrakerDev/conejo_blanco/main"
 
 OLLAMA_BASE = "http://localhost:11434"
@@ -206,6 +206,8 @@ REGLAS:
 3. Usa UN solo comando por turno, compatible con {os_name}. Nunca repitas comandos ya ejecutados ni inventes salidas.
 4. Pide confirmación antes de acciones destructivas (borrar carpetas, formatear, alterar permisos críticos)."""
 
+INSTRUCCIONES_AGENTE_LITE = """Agente en {os_name} ({cwd}). Si es charla, responde directo. Si requiere acción en terminal, responde SOLO con <EJECUTAR>comando</EJECUTAR> (un comando por turno, sin <PLAN> ni rodeos). Al terminar, resume breve."""
+
 ASCII_ART = r"""(\_/)
 (^_^)
 />Conejo_blanco;
@@ -222,6 +224,7 @@ console = Console()
 
 COMANDOS_INTERNOS = {
     "/agente": "Activa/desactiva el modo agente ejecutor con plan de acción",
+    "/lite": "Activa/desactiva el modo ultrarrápido (sin memoria pesada, ideal para respuestas al instante)",
     "/auto": "Activa/desactiva la ejecución automática (mantiene protección ante comandos peligrosos)",
     "/tareas": "Muestra la memoria de tareas (archivos creados, dependencias instaladas y pasos realizados)",
     "/historial": "Muestra el historial de comandos ejecutados en terminal con duración y estado",
@@ -936,7 +939,12 @@ def cargar_configuracion():
     except Exception:
         return DEFAULT_CONFIG.copy()
 
-def construir_system_prompt(base_prompt, modo_agente):
+def construir_system_prompt(base_prompt, modo_agente, modo_lite=False):
+    if modo_lite:
+        if not modo_agente:
+            return "Responde directo y conciso en español."
+        return INSTRUCCIONES_AGENTE_LITE.format(os_name=detectar_so(), cwd=os.getcwd())
+
     hechos = cargar_memoria_largo_plazo()
     bloque_memoria = ""
     if hechos:
@@ -992,9 +1000,10 @@ class ConejoCompleter(Completer):
                 if nombre.lower().startswith(prefijo):
                     yield Completion(nombre, start_position=-len(prefijo), display_meta=desc)
 
-def mostrar_banner(modelo_actual, temperatura, modo_agente, auto_ejecutar):
+def mostrar_banner(modelo_actual, temperatura, modo_agente, auto_ejecutar, modo_lite=False):
     estado_agente = "[bold green]ON[/bold green]" if modo_agente else "[dim]OFF[/dim]"
     estado_auto = "[bold red]AUTO[/bold red]" if auto_ejecutar else "[cyan]MANUAL[/cyan]"
+    estado_lite = " | [bold magenta]LITE: ON[/bold magenta]" if modo_lite else ""
     num_hechos = len(cargar_memoria_largo_plazo())
     activos_bg = sum(1 for p in PROCESOS_BG.values() if p["estado"] == "ejecutando")
     bg_str = f" | [bold yellow]BG:[/bold yellow] {activos_bg}" if activos_bg > 0 else ""
@@ -1002,10 +1011,11 @@ def mostrar_banner(modelo_actual, temperatura, modo_agente, auto_ejecutar):
     banner_text = Text.from_markup(
         f"[bold bright_white]{ASCII_ART}[/bold bright_white]  [dim]v{VERSION}[/dim]\n\n"
         f"[bold cyan]Modelo:[/bold cyan] {modelo_actual} | [bold cyan]Temp:[/bold cyan] {temperatura} | "
-        f"[bold cyan]Agente:[/bold cyan] {estado_agente} ({estado_auto}) | [bold cyan]Memoria:[/bold cyan] {num_hechos}{bg_str}\n"
-        f"[dim]Comandos (Tab):[/dim] [bold yellow]/agente[/bold yellow] | [bold yellow]/auto[/bold yellow] | "
-        f"[bold yellow]/tareas[/bold yellow] | [bold yellow]/historial[/bold yellow] | [bold yellow]/procesos[/bold yellow] | "
-        f"[bold yellow]/instalar[/bold yellow] | [bold yellow]/limpiar[/bold yellow] | [bold yellow]/salir[/bold yellow]"
+        f"[bold cyan]Agente:[/bold cyan] {estado_agente} ({estado_auto}){estado_lite} | [bold cyan]Memoria:[/bold cyan] {num_hechos}{bg_str}\n"
+        f"[dim]Comandos (Tab):[/dim] [bold yellow]/agente[/bold yellow] | [bold yellow]/lite[/bold yellow] | [bold yellow]/auto[/bold yellow] | "
+        f"[bold yellow]/tareas[/bold yellow] | [bold yellow]/historial[/bold yellow] | [bold yellow]/procesos[/bold yellow]\n"
+        f"[dim]Sistema:[/dim]         [bold yellow]/instalar[/bold yellow] | [bold yellow]/modelos[/bold yellow] | [bold yellow]/modelo[/bold yellow] | "
+        f"[bold yellow]/memoria[/bold yellow] | [bold yellow]/guardar[/bold yellow] | [bold yellow]/actualizar[/bold yellow] | [bold yellow]/limpiar[/bold yellow] | [bold yellow]/salir[/bold yellow]"
     )
     console.print(Panel(banner_text, border_style="cyan", expand=False))
     console.print()
@@ -1100,7 +1110,7 @@ def exportar_markdown(mensajes, modelo_actual, temperatura, nombre_archivo=None)
     except Exception as e:
         console.print(f"[bold red]Error al guardar el archivo:[/bold red] {e}\n")
 
-def consultar_modelo(mensajes, modelo, temperatura):
+def consultar_modelo(mensajes, modelo, temperatura, modo_lite=False):
     payload = {
         "model": modelo,
         "messages": mensajes,
@@ -1108,7 +1118,7 @@ def consultar_modelo(mensajes, modelo, temperatura):
         "keep_alive": "10m",
         "options": {
             "temperature": temperatura,
-            "num_ctx": 2048
+            "num_ctx": 1024 if modo_lite else 2048
         }
     }
 
@@ -1203,7 +1213,7 @@ def extraer_comando_agente(respuesta):
 
     return None
 
-def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, session, base_prompt):
+def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, session, base_prompt, modo_lite=False):
     max_iteraciones = 8
     iteracion = 0
     temp_efectiva = min(temperatura_actual, 0.15) if modo_agente else temperatura_actual
@@ -1224,7 +1234,7 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
                 "content": f"No repitas comandos ya ejecutados: {lista_prev}."
             })
 
-        respuesta = consultar_modelo(mensajes_envio, modelo_actual, temp_efectiva)
+        respuesta = consultar_modelo(mensajes_envio, modelo_actual, temp_efectiva, modo_lite=modo_lite)
         if respuesta is None:
             mensajes.pop()
             return
@@ -1233,11 +1243,11 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
             dato = match_rec.group(1).strip()
             if guardar_hecho_memoria(dato):
                 console.print(f"[dim cyan]🧠 Memoria actualizada: {dato}[/dim cyan]")
-                mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
+                mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente, modo_lite)
 
         respuesta_limpia = re.sub(r"<RECORDAR>.*?</RECORDAR>", "", respuesta, flags=re.DOTALL | re.IGNORECASE).strip()
 
-        if modo_agente and not plan_mostrado:
+        if modo_agente and not modo_lite and not plan_mostrado:
             plan_texto = extraer_plan_accion(respuesta_limpia)
             if plan_texto:
                 console.print(Panel(
@@ -1369,11 +1379,11 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
 
     console.print("[yellow]⚠ Se alcanzó el límite máximo de 8 pasos autónomos por turno.[/yellow]\n")
 
-def iniciar_mensajes_limpios(base_prompt, modo_agente):
+def iniciar_mensajes_limpios(base_prompt, modo_agente, modo_lite=False):
     """Crea una sesión de conversación completamente nueva sin tareas ni comandos pendientes."""
     limpiar_sesion_temporal()
     limpiar_memoria_tareas()
-    return [{"role": "system", "content": construir_system_prompt(base_prompt, modo_agente)}]
+    return [{"role": "system", "content": construir_system_prompt(base_prompt, modo_agente, modo_lite)}]
 
 def main():
     config = cargar_configuracion()
@@ -1383,6 +1393,7 @@ def main():
     parser.add_argument("-m", "--model", default=config["default_model"], help="Modelo local.")
     parser.add_argument("-t", "--temperature", type=float, default=float(config["temperature"]), help="Temperatura.")
     parser.add_argument("-a", "--agent", action="store_true", help="Inicia con el modo agente activado.")
+    parser.add_argument("--lite", action="store_true", help="Inicia en modo ultrarrápido sin memoria ni instrucciones pesadas.")
     parser.add_argument("-y", "--yes", action="store_true", help="Autoriza automáticamente comandos seguros del agente.")
     parser.add_argument("-l", "--list-models", action="store_true", help="Lista modelos locales.")
     parser.add_argument("-f", "--file", action="append", help="Archivos de contexto.")
@@ -1404,13 +1415,14 @@ def main():
     temperatura_actual = args.temperature
     base_prompt = config["system_prompt"]
     modo_agente = args.agent
+    modo_lite = args.lite
     auto_ejecutar = args.yes
 
     if args.list_models:
         listar_modelos(modelo_actual)
         return
 
-    mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente)
+    mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente, modo_lite)
 
     contexto_extra = []
     if not sys.stdin.isatty():
@@ -1442,16 +1454,23 @@ def main():
         mensaje_usuario = f"{bloque_contexto}\n\n{prompt_inicial}".strip()
         mensajes.append({"role": "user", "content": mensaje_usuario})
         console.print()
-        procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, session, base_prompt)
+        procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, session, base_prompt, modo_lite)
         limpiar_sesion_temporal()
         return
 
-    mostrar_banner(modelo_actual, temperatura_actual, modo_agente, auto_ejecutar)
+    mostrar_banner(modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, modo_lite)
 
     try:
         while True:
             try:
-                prefijo_agente = "⚡" if modo_agente else "❯"
+                if modo_agente and modo_lite:
+                    prefijo_agente = "⚡🚀"
+                elif modo_agente:
+                    prefijo_agente = "⚡"
+                elif modo_lite:
+                    prefijo_agente = "🚀"
+                else:
+                    prefijo_agente = "❯"
                 entrada = session.prompt([('class:prompt', f'[{modelo_actual}] {prefijo_agente} ')]).strip()
 
                 if not entrada:
@@ -1471,7 +1490,7 @@ def main():
                     instalado = instalar_modelo_ollama(modelo_a_instalar, session)
                     if instalado:
                         modelo_actual = instalado
-                        mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente)
+                        mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente, modo_lite)
                         console.print(f"[green]✔ Modelo activo cambiado a [bold]{modelo_actual}[/bold] (nuevo chat limpio).[/green]\n")
                     continue
                 if entrada.lower() == '/tareas':
@@ -1485,15 +1504,21 @@ def main():
                     continue
                 if entrada.lower() == '/agente':
                     modo_agente = not modo_agente
-                    mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
+                    mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente, modo_lite)
                     estado = "[bold green]ACTIVADO[/bold green]" if modo_agente else "[yellow]DESACTIVADO[/yellow]"
                     console.print(f"Modo Agente ejecutor: {estado}\n")
+                    continue
+                if entrada.lower() == '/lite':
+                    modo_lite = not modo_lite
+                    mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente, modo_lite)
+                    estado = "[bold magenta]ACTIVADO (ultrarrápido, sin memoria ni instrucciones pesadas)[/bold magenta]" if modo_lite else "[cyan]DESACTIVADO (modo completo)[/cyan]"
+                    console.print(f"Modo Lite: {estado}\n")
                     continue
                 if entrada.lower() == '/auto':
                     auto_ejecutar = not auto_ejecutar
                     if auto_ejecutar and not modo_agente:
                         modo_agente = True
-                        mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
+                        mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente, modo_lite)
                     estado = "[bold red]AUTOMÁTICO (comandos peligrosos siguen pidiendo permiso)[/bold red]" if auto_ejecutar else "[cyan]MANUAL (pide confirmación)[/cyan]"
                     console.print(f"Ejecución de comandos: {estado}\n")
                     continue
@@ -1503,7 +1528,7 @@ def main():
                 if entrada.lower().startswith('/recordar '):
                     dato = entrada[10:].strip()
                     if guardar_hecho_memoria(dato):
-                        mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
+                        mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente, modo_lite)
                         console.print(f"[green]🧠 Guardado en memoria permanente:[/green] [white]{dato}[/white]\n")
                     else:
                         console.print("[yellow]Ese dato ya estaba en memoria o está vacío.[/yellow]\n")
@@ -1511,13 +1536,13 @@ def main():
                 if entrada.lower() == '/olvidar':
                     if os.path.isfile(MEMORY_FILE):
                         os.remove(MEMORY_FILE)
-                    mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente)
+                    mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente, modo_lite)
                     console.print("[yellow]🧹 Memoria persistente de largo plazo borrada.[/yellow]\n")
                     continue
                 if entrada.lower() == '/limpiar':
-                    mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente)
+                    mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente, modo_lite)
                     console.clear()
-                    mostrar_banner(modelo_actual, temperatura_actual, modo_agente, auto_ejecutar)
+                    mostrar_banner(modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, modo_lite)
                     console.print("[dim]✔ Conversación y memoria de tareas reiniciadas desde cero.[/dim]\n")
                     continue
                 if entrada.lower() == '/config':
@@ -1545,7 +1570,7 @@ def main():
                     nuevo_modelo = entrada[8:].strip()
                     if validar_modelo(nuevo_modelo):
                         modelo_actual = nuevo_modelo
-                        mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente)
+                        mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente, modo_lite)
                         console.print(f"[green]✔ Modelo cambiado a [bold]{modelo_actual}[/bold] (nuevo chat limpio iniciado).[/green]\n")
                     else:
                         console.print(f"[red]✖ El modelo '{nuevo_modelo}' no está instalado.[/red]")
@@ -1564,7 +1589,7 @@ def main():
 
                 mensajes.append({"role": "user", "content": entrada})
                 console.print()
-                procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, session, base_prompt)
+                procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, session, base_prompt, modo_lite)
 
             except KeyboardInterrupt:
                 console.print("\n[dim]Usa /salir para cerrar o /limpiar para reiniciar el chat.[/dim]")
