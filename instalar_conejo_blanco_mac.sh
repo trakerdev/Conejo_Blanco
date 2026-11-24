@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -e
-CONEJO_VERSION="2.2.0"
+CONEJO_VERSION="2.3.0"
 
 VERDE='\033[0;32m'
 CIAN='\033[0;36m'
@@ -132,7 +132,7 @@ if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/TrakerDev/conejo_blanco/main"
 
 OLLAMA_BASE = "http://localhost:11434"
@@ -147,6 +147,7 @@ MEMORY_FILE = os.path.join(APP_DIR, "memoria_usuario.json")
 SESSION_LOG_FILE = os.path.join(APP_DIR, "historial_sesiones.jsonl")
 TERMINAL_LOG_FILE = os.path.join(APP_DIR, "historial_terminal.jsonl")
 TASK_MEMORY_FILE = os.path.join(APP_DIR, "memoria_tareas.json")
+SKILLS_DIR = os.path.join(APP_DIR, "skills")
 OLLAMA_LOG = os.path.join(APP_DIR, "ollama_serve.log")
 
 TIMEOUT_MAXIMO_SEGUNDOS = 300  # 5 minutos máximo (countdown 05:00 -> 00:00)
@@ -226,6 +227,9 @@ COMANDOS_INTERNOS = {
     "/agente": "Activa/desactiva el modo agente ejecutor con plan de acción",
     "/lite": "Activa/desactiva el modo ultrarrápido (sin memoria pesada, ideal para respuestas al instante)",
     "/auto": "Activa/desactiva la ejecución automática (mantiene protección ante comandos peligrosos)",
+    "/skills": "Lista las skills especializadas disponibles en ~/.conejo_blanco/skills/",
+    "/skill": "Activa o desactiva una skill en la sesión actual (ej. /skill ffmpeg o /skill off)",
+    "/crear_skill": "Crea una plantilla de skill nueva en ~/.conejo_blanco/skills/ (ej. /crear_skill nginx)",
     "/tareas": "Muestra la memoria de tareas (archivos creados, dependencias instaladas y pasos realizados)",
     "/historial": "Muestra el historial de comandos ejecutados en terminal con duración y estado",
     "/procesos": "Muestra procesos ejecutándose en segundo plano y permite consultar su salida",
@@ -276,6 +280,159 @@ def formatear_tiempo(segundos):
     mins = segundos // 60
     segs = segundos % 60
     return f"{mins:02d}:{segs:02d}"
+
+
+# ==========================================================
+# GESTIÓN DE SKILLS BAJO DEMANDA (~/.conejo_blanco/skills/)
+# ==========================================================
+DEFAULT_SKILLS = {
+    "ffmpeg.md": """---
+nombre: ffmpeg
+descripcion: Procesamiento, conversión, recorte y extracción de audio/video con FFmpeg
+keywords: ffmpeg, video, audio, mp4, mkv, mp3, transcodificar, comprimir video, rtsp, hls
+---
+Usa siempre `-hide_banner -loglevel error` para mantener salidas limpias.
+- Convertir a MP4 H.264 compatible: `ffmpeg -hide_banner -loglevel error -i entrada.mkv -c:v libx264 -crf 22 -preset fast -c:a aac salida.mp4`
+- Extraer audio MP3: `ffmpeg -hide_banner -loglevel error -i video.mp4 -vn -ab 192k audio.mp3`
+- Recortar sin recodificar: `ffmpeg -hide_banner -loglevel error -ss 00:01:00 -to 00:02:00 -i entrada.mp4 -c copy salida.mp4`
+""",
+    "linux_admin.md": """---
+nombre: linux_admin
+descripcion: Diagnóstico de sistema, servicios systemd, red, discos y procesos en Linux
+keywords: systemd, systemctl, puerto, puertos, disco, particion, memoria ram, cpu, servicio, journalctl, nginx
+---
+Prioriza comandos no interactivos y rápidos:
+- Ver uso de disco y montajes: `df -hT`
+- Ver RAM y swap: `free -h`
+- Ver puertos en escucha: `ss -tulpn`
+- Estado de servicio: `systemctl status <servicio> --no-pager`
+- Últimos logs de servicio: `journalctl -u <servicio> -n 30 --no-pager`
+""",
+    "docker.md": """---
+nombre: docker
+descripcion: Gestión de contenedores, imágenes, logs y Docker Compose
+keywords: docker, contenedor, contenedores, docker-compose, imagen, imagenes, dockerfile
+---
+Usa flags no interactivos (`-d`, `--tail`):
+- Listar contenedores activos/todos: `docker ps -a --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"`
+- Ver logs recientes: `docker logs --tail 40 <contenedor>`
+- Levantar stack Compose: `docker compose up -d`
+- Limpiar recursos huérfanos seguros: `docker image prune -f`
+""",
+    "git.md": """---
+nombre: git
+descripcion: Flujo de control de versiones, commits, ramas y sincronización con GitHub
+keywords: git, commit, push, pull, rama, branch, repositorio, github, merge, status
+---
+- Revisar estado y cambios: `git status -s && git diff --stat`
+- Subir cambios: `git add . && git commit -m "mensaje descriptivo" && git push`
+- Ver historial compacto: `git log --oneline -n 10`
+"""
+}
+
+def inicializar_skills_por_defecto():
+    os.makedirs(SKILLS_DIR, exist_ok=True)
+    # Solo poblar las skills base si la carpeta está vacía
+    existentes = [f for f in os.listdir(SKILLS_DIR) if f.endswith(".md")]
+    if not existentes:
+        for fname, contenido in DEFAULT_SKILLS.items():
+            try:
+                with open(os.path.join(SKILLS_DIR, fname), "w", encoding="utf-8") as f:
+                    f.write(contenido.strip() + "\n")
+            except Exception:
+                pass
+
+def listar_skills_disponibles():
+    os.makedirs(SKILLS_DIR, exist_ok=True)
+    skills = {}
+    for archivo in sorted(os.listdir(SKILLS_DIR)):
+        if archivo.endswith(".md"):
+            nombre = archivo[:-3]
+            ruta = os.path.join(SKILLS_DIR, archivo)
+            try:
+                with open(ruta, "r", encoding="utf-8") as f:
+                    contenido = f.read()
+                desc = "Skill personalizada"
+                keywords = [nombre.lower()]
+                m_desc = re.search(r"^descripcion:\s*(.+)$", contenido, re.IGNORECASE | re.MULTILINE)
+                if m_desc:
+                    desc = m_desc.group(1).strip()
+                m_kw = re.search(r"^keywords:\s*(.+)$", contenido, re.IGNORECASE | re.MULTILINE)
+                if m_kw:
+                    kws = [k.strip().lower() for k in m_kw.group(1).split(",") if k.strip()]
+                    if kws:
+                        keywords = kws
+                skills[nombre] = {"ruta": ruta, "descripcion": desc, "keywords": keywords}
+            except Exception:
+                continue
+    return skills
+
+def cargar_contenido_skill(nombre):
+    if not nombre:
+        return None
+    ruta = os.path.join(SKILLS_DIR, f"{nombre}.md")
+    if not os.path.isfile(ruta):
+        return None
+    try:
+        with open(ruta, "r", encoding="utf-8") as f:
+            texto = f.read()
+        texto_limpio = re.sub(r"^---.*?---\s*", "", texto, flags=re.DOTALL).strip()
+        return texto_limpio
+    except Exception:
+        return None
+
+def detectar_skill_automatica(texto_usuario):
+    """Detecta en <1ms si el prompt del usuario coincide con alguna skill instalada."""
+    texto_low = texto_usuario.lower()
+    skills = listar_skills_disponibles()
+    for nombre, info in skills.items():
+        for kw in info["keywords"]:
+            if re.search(rf"\b{re.escape(kw)}\b", texto_low):
+                return nombre
+    return None
+
+def mostrar_skills(skill_activa):
+    skills = listar_skills_disponibles()
+    if not skills:
+        console.print(f"[yellow]No hay skills en {SKILLS_DIR}. Usa [bold]/crear_skill <nombre>[/bold].[/yellow]\n")
+        return
+    tabla = Table(title=f"🧩 Skills Disponibles ({SKILLS_DIR})", border_style="cyan")
+    tabla.add_column("Estado", justify="center", style="green", width=10)
+    tabla.add_column("Nombre", style="bold yellow", width=16)
+    tabla.add_column("Descripción", style="white")
+    tabla.add_column("Palabras clave", style="dim")
+
+    for nombre, info in skills.items():
+        estado = "● Activa" if nombre == skill_activa else ""
+        kws = ", ".join(info["keywords"][:5])
+        tabla.add_row(estado, nombre, info["descripcion"], kws)
+
+    console.print()
+    console.print(tabla)
+    console.print("[dim]Activa una skill fija con [bold]/skill <nombre>[/bold] (o se cargarán automáticamente según tu consulta).[/dim]\n")
+
+def crear_plantilla_skill(nombre):
+    nombre_limpio = re.sub(r"[^a-zA-Z0-9_-]", "_", nombre.strip().lower())
+    if not nombre_limpio:
+        console.print("[yellow]Especifica un nombre. Ejemplo: [bold]/crear_skill nginx[/bold][/yellow]\n")
+        return
+    os.makedirs(SKILLS_DIR, exist_ok=True)
+    ruta = os.path.join(SKILLS_DIR, f"{nombre_limpio}.md")
+    if os.path.isfile(ruta):
+        console.print(f"[yellow]La skill '{nombre_limpio}' ya existe en:[/yellow] [cyan]{ruta}[/cyan]\n")
+        return
+    plantilla = f"""---
+nombre: {nombre_limpio}
+descripcion: Instrucciones y comandos especializados para {nombre_limpio}
+keywords: {nombre_limpio}
+---
+Reglas y comandos recomendados para {nombre_limpio}:
+- Comando principal: `<comando_aqui>`
+"""
+    with open(ruta, "w", encoding="utf-8") as f:
+        f.write(plantilla)
+    console.print(f"[green]✔ Skill creada en:[/green] [bold cyan]{ruta}[/bold cyan]")
+    console.print(f"[dim]Edítala para agregar tus comandos y actívala con [bold]/skill {nombre_limpio}[/bold].[/dim]\n")
 
 # ==========================================================
 # 1. MEMORIA DE TAREAS (Archivos, Dependencias y Pasos)
@@ -939,11 +1096,17 @@ def cargar_configuracion():
     except Exception:
         return DEFAULT_CONFIG.copy()
 
-def construir_system_prompt(base_prompt, modo_agente, modo_lite=False):
+def construir_system_prompt(base_prompt, modo_agente, modo_lite=False, skill_nombre=None):
+    bloque_skill = ""
+    if skill_nombre:
+        contenido_sk = cargar_contenido_skill(skill_nombre)
+        if contenido_sk:
+            bloque_skill = f"\n\nSKILL ESPECIALIZADA ({skill_nombre}):\n{contenido_sk}"
+
     if modo_lite:
         if not modo_agente:
-            return "Responde directo y conciso en español."
-        return INSTRUCCIONES_AGENTE_LITE.format(os_name=detectar_so(), cwd=os.getcwd())
+            return f"Responde directo y conciso en español.{bloque_skill}"
+        return f"{INSTRUCCIONES_AGENTE_LITE.format(os_name=detectar_so(), cwd=os.getcwd())}{bloque_skill}"
 
     hechos = cargar_memoria_largo_plazo()
     bloque_memoria = ""
@@ -964,10 +1127,10 @@ def construir_system_prompt(base_prompt, modo_agente, modo_lite=False):
         bloque_tareas = "\n\nContexto de sesión:\n" + "\n".join(partes)
 
     if not modo_agente:
-        return f"{base_prompt}{bloque_memoria}"
+        return f"{base_prompt}{bloque_memoria}{bloque_skill}"
 
     extra = INSTRUCCIONES_AGENTE.format(os_name=detectar_so(), cwd=os.getcwd())
-    return f"{base_prompt}{bloque_memoria}{bloque_tareas}\n\n{extra}"
+    return f"{base_prompt}{bloque_memoria}{bloque_tareas}{bloque_skill}\n\n{extra}"
 
 class ConejoCompleter(Completer):
     def __init__(self):
@@ -999,11 +1162,20 @@ class ConejoCompleter(Completer):
             for nombre, desc in MODELOS_SUGERIDOS.items():
                 if nombre.lower().startswith(prefijo):
                     yield Completion(nombre, start_position=-len(prefijo), display_meta=desc)
+            return
+        if texto.lower().startswith("/skill "):
+            prefijo = texto.split(" ", 1)[1].lower()
+            if "off".startswith(prefijo):
+                yield Completion("off", start_position=-len(prefijo), display_meta="Desactiva la skill fija actual")
+            for nombre, info in listar_skills_disponibles().items():
+                if nombre.lower().startswith(prefijo):
+                    yield Completion(nombre, start_position=-len(prefijo), display_meta=info["descripcion"])
 
-def mostrar_banner(modelo_actual, temperatura, modo_agente, auto_ejecutar, modo_lite=False):
+def mostrar_banner(modelo_actual, temperatura, modo_agente, auto_ejecutar, modo_lite=False, skill_activa=None):
     estado_agente = "[bold green]ON[/bold green]" if modo_agente else "[dim]OFF[/dim]"
     estado_auto = "[bold red]AUTO[/bold red]" if auto_ejecutar else "[cyan]MANUAL[/cyan]"
     estado_lite = " | [bold magenta]LITE: ON[/bold magenta]" if modo_lite else ""
+    estado_skill = f" | [bold green]Skill:[/bold green] {skill_activa}" if skill_activa else ""
     num_hechos = len(cargar_memoria_largo_plazo())
     activos_bg = sum(1 for p in PROCESOS_BG.values() if p["estado"] == "ejecutando")
     bg_str = f" | [bold yellow]BG:[/bold yellow] {activos_bg}" if activos_bg > 0 else ""
@@ -1011,9 +1183,9 @@ def mostrar_banner(modelo_actual, temperatura, modo_agente, auto_ejecutar, modo_
     banner_text = Text.from_markup(
         f"[bold bright_white]{ASCII_ART}[/bold bright_white]  [dim]v{VERSION}[/dim]\n\n"
         f"[bold cyan]Modelo:[/bold cyan] {modelo_actual} | [bold cyan]Temp:[/bold cyan] {temperatura} | "
-        f"[bold cyan]Agente:[/bold cyan] {estado_agente} ({estado_auto}){estado_lite} | [bold cyan]Memoria:[/bold cyan] {num_hechos}{bg_str}\n"
+        f"[bold cyan]Agente:[/bold cyan] {estado_agente} ({estado_auto}){estado_lite}{estado_skill} | [bold cyan]Memoria:[/bold cyan] {num_hechos}{bg_str}\n"
         f"[dim]Comandos (Tab):[/dim] [bold yellow]/agente[/bold yellow] | [bold yellow]/lite[/bold yellow] | [bold yellow]/auto[/bold yellow] | "
-        f"[bold yellow]/tareas[/bold yellow] | [bold yellow]/historial[/bold yellow] | [bold yellow]/procesos[/bold yellow]\n"
+        f"[bold yellow]/skills[/bold yellow] | [bold yellow]/tareas[/bold yellow] | [bold yellow]/historial[/bold yellow] | [bold yellow]/procesos[/bold yellow]\n"
         f"[dim]Sistema:[/dim]         [bold yellow]/instalar[/bold yellow] | [bold yellow]/modelos[/bold yellow] | [bold yellow]/modelo[/bold yellow] | "
         f"[bold yellow]/memoria[/bold yellow] | [bold yellow]/guardar[/bold yellow] | [bold yellow]/actualizar[/bold yellow] | [bold yellow]/limpiar[/bold yellow] | [bold yellow]/salir[/bold yellow]"
     )
@@ -1379,11 +1551,11 @@ def procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agen
 
     console.print("[yellow]⚠ Se alcanzó el límite máximo de 8 pasos autónomos por turno.[/yellow]\n")
 
-def iniciar_mensajes_limpios(base_prompt, modo_agente, modo_lite=False):
+def iniciar_mensajes_limpios(base_prompt, modo_agente, modo_lite=False, skill_nombre=None):
     """Crea una sesión de conversación completamente nueva sin tareas ni comandos pendientes."""
     limpiar_sesion_temporal()
     limpiar_memoria_tareas()
-    return [{"role": "system", "content": construir_system_prompt(base_prompt, modo_agente, modo_lite)}]
+    return [{"role": "system", "content": construir_system_prompt(base_prompt, modo_agente, modo_lite, skill_nombre)}]
 
 def main():
     config = cargar_configuracion()
@@ -1410,6 +1582,7 @@ def main():
         return
 
     asegurar_ollama_activo()
+    inicializar_skills_por_defecto()
 
     modelo_actual = args.model
     temperatura_actual = args.temperature
@@ -1417,12 +1590,13 @@ def main():
     modo_agente = args.agent
     modo_lite = args.lite
     auto_ejecutar = args.yes
+    skill_fija = None
 
     if args.list_models:
         listar_modelos(modelo_actual)
         return
 
-    mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente, modo_lite)
+    mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente, modo_lite, skill_fija)
 
     contexto_extra = []
     if not sys.stdin.isatty():
@@ -1510,9 +1684,33 @@ def main():
                     continue
                 if entrada.lower() == '/lite':
                     modo_lite = not modo_lite
-                    mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente, modo_lite)
+                    mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente, modo_lite, skill_fija)
                     estado = "[bold magenta]ACTIVADO (ultrarrápido, sin memoria ni instrucciones pesadas)[/bold magenta]" if modo_lite else "[cyan]DESACTIVADO (modo completo)[/cyan]"
                     console.print(f"Modo Lite: {estado}\n")
+                    continue
+                if entrada.lower() == '/skills':
+                    mostrar_skills(skill_fija)
+                    continue
+                if entrada.lower().startswith('/crear_skill'):
+                    nombre_sk = entrada[12:].strip() if len(entrada) > 12 else ""
+                    crear_plantilla_skill(nombre_sk)
+                    continue
+                if entrada.lower() == '/skill' or entrada.lower().startswith('/skill '):
+                    arg_sk = entrada[6:].strip() if len(entrada) > 6 else ""
+                    if not arg_sk:
+                        mostrar_skills(skill_fija)
+                        continue
+                    if arg_sk.lower() in ["off", "ninguna", "none", "quitar"]:
+                        skill_fija = None
+                        mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente, modo_lite, None)
+                        console.print("[cyan]✔ Skill fija desactivada (detección automática activa).[/cyan]\n")
+                    elif arg_sk in listar_skills_disponibles():
+                        skill_fija = arg_sk
+                        mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente, modo_lite, skill_fija)
+                        console.print(f"[green]🧩 Skill activada en sesión:[/green] [bold]{skill_fija}[/bold]\n")
+                    else:
+                        console.print(f"[red]✖ La skill '{arg_sk}' no existe en {SKILLS_DIR}.[/red]")
+                        console.print("[dim]Usa [bold]/skills[/bold] para ver las disponibles o [bold]/crear_skill <nombre>[/bold].[/dim]\n")
                     continue
                 if entrada.lower() == '/auto':
                     auto_ejecutar = not auto_ejecutar
@@ -1540,10 +1738,11 @@ def main():
                     console.print("[yellow]🧹 Memoria persistente de largo plazo borrada.[/yellow]\n")
                     continue
                 if entrada.lower() == '/limpiar':
-                    mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente, modo_lite)
+                    skill_fija = None
+                    mensajes = iniciar_mensajes_limpios(base_prompt, modo_agente, modo_lite, None)
                     console.clear()
-                    mostrar_banner(modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, modo_lite)
-                    console.print("[dim]✔ Conversación y memoria de tareas reiniciadas desde cero.[/dim]\n")
+                    mostrar_banner(modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, modo_lite, None)
+                    console.print("[dim]✔ Conversación, skills y memoria de tareas reiniciadas desde cero.[/dim]\n")
                     continue
                 if entrada.lower() == '/config':
                     mostrar_config(modelo_actual, temperatura_actual, base_prompt)
@@ -1587,6 +1786,10 @@ def main():
                         console.print(f"[red]✖ Archivo no encontrado.[/red]\n")
                     continue
 
+                skill_turno = skill_fija or detectar_skill_automatica(entrada)
+                if skill_turno and not skill_fija:
+                    console.print(f"[dim green]🧩 Skill detectada automáticamente: {skill_turno}[/dim green]")
+                mensajes[0]["content"] = construir_system_prompt(base_prompt, modo_agente, modo_lite, skill_turno)
                 mensajes.append({"role": "user", "content": entrada})
                 console.print()
                 procesar_turno_agente(mensajes, modelo_actual, temperatura_actual, modo_agente, auto_ejecutar, session, base_prompt, modo_lite)

@@ -1,4 +1,4 @@
-# 🐇 Conejo Blanco CLI & Terminal Agent (v2.2.0)
+# 🐇 Conejo Blanco CLI & Terminal Agent (v2.3.0)
 
 ```text
 (\_/)
@@ -7,7 +7,7 @@
 by Traker
 ```
 
-![Versión](https://img.shields.io/badge/Versión-v2.2.0-brightgreen.svg)
+![Versión](https://img.shields.io/badge/Versión-v2.3.0-brightgreen.svg)
 ![Plataformas](https://img.shields.io/badge/Plataformas-Linux%20%7C%20macOS%20%7C%20Windows%20%7C%20Android-blueviolet.svg)
 ![Python](https://img.shields.io/badge/Python-3.8+-blue.svg?logo=python&logoColor=white)
 ![Motor](https://img.shields.io/badge/Motor-Ollama%20Local-black.svg)
@@ -17,7 +17,7 @@ by Traker
 
 ---
 
-## ✨ Novedades Principales (v2.2.0)
+## ✨ Novedades Principales (v2.3.0)
 
 * **🗂️ Memoria de Tareas de Sesión (`/tareas`):** Registra automáticamente en `~/.conejo_blanco/memoria_tareas.json` los **archivos creados/modificados**, las **dependencias instaladas** (`pip`, `apt`, `npm`, `brew`, `pkg`, `winget`) y los **pasos realizados**, inyectándolos en el contexto del agente para que nunca pierda el hilo de lo que ya construyó.
 * **🔄 Ejecución Asíncrona No Bloqueante (`/procesos`):** Si un comando tarda más de 10 segundos (compilaciones, descargas pesadas, servidores), puedes enviarlo a segundo plano con `Ctrl+C` para seguir conversando mientras la onda Braille sigue trabajando en paralelo.
@@ -82,6 +82,9 @@ chmod +x instalar_conejo_blanco_android_termux.sh
 | :--- | :--- |
 | `/agente` | Enciende o apaga el **Modo Agente** (muestra un **Plan de Acción** numerado antes de ejecutar comandos). |
 | `/lite` | Activa/desactiva el **Modo Ultrarrápido** (omite memoria y reglas pesadas; compatible con `/agente` para respuestas al instante). |
+| `/skills` | Lista las *skills* especializadas en `~/.conejo_blanco/skills/` (`ffmpeg`, `linux_admin`, `docker`, `git` y personalizadas). |
+| `/skill <nombre>` | Activa o desactiva manualmente una *skill* en la sesión actual (`/skill off` para volver a auto-detección). |
+| `/crear_skill <nombre>` | Crea una nueva plantilla `.md` en `~/.conejo_blanco/skills/`. |
 | `/auto` | Alterna ejecución automática para comandos seguros (los comandos peligrosos **siempre** piden autorización). |
 | `/tareas` | Muestra los archivos creados, dependencias instaladas y pasos realizados en la sesión. |
 | `/historial` | Muestra el registro de comandos ejecutados con su estado, duración y resumen de salida. |
